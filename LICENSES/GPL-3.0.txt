@@ -1,0 +1,17 @@
+PLACEHOLDER. This file must contain the official GNU General Public
+License version 3 before Kestrel is published or distributed.
+
+The GPL must be distributed verbatim, so it is not reproduced from
+memory here: a copy with even a small transcription error is not the
+licence it claims to be.
+
+Replace this file with the official text:
+
+    curl -o LICENSES/GPL-3.0.txt https://www.gnu.org/licenses/gpl-3.0.txt
+
+or download it from https://www.gnu.org/licenses/gpl-3.0.txt by hand.
+
+The expected file is 674 lines and begins with:
+
+                        GNU GENERAL PUBLIC LICENSE
+                           Version 3, 29 June 2007

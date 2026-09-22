@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docs: Kestrel</title>
+<meta name="description" content="Documentation for Kestrel, the Windows desktop AI assistant: installation, models, chat, files, macros, the block editor, UI mapping, voice, the safety framework and troubleshooting.">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="kestrel.png">
+<link rel="apple-touch-icon" href="kestrel.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="index.html" class="nav-logo">
+      <img src="kestrel.png" width="20" height="20" alt="">
+      Kestrel
+    </a>
+    <div class="nav-links">
+      <a href="index.html#features">Features</a>
+      <a href="index.html#how-it-works">How it works</a>
+      <a href="index.html#safety">Safety</a>
+      <a href="docs.html" class="current">Docs</a>
+      <a href="https://github.com/ibrahim12012/Kestrel">GitHub</a>
+      <a href="docs.html#install" class="nav-cta">Get Kestrel</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container docs-layout">
+  <aside class="docs-nav">
+    <div class="docs-nav-group">
+      <div class="docs-nav-label">Get started</div>
+      <a href="#install">Installation</a>
+      <a href="#setup">First-time setup</a>
+      <a href="#models">Models and profiles</a>
+    </div>
+    <div class="docs-nav-group">
+      <div class="docs-nav-label">Using it</div>
+      <a href="#chat">Chat</a>
+      <a href="#files">Files and documents</a>
+      <a href="#web">Web access</a>
+      <a href="#voice">Voice</a>
+      <a href="#decision-tree">Decision tree</a>
+      <a href="#autonomous">Autonomous mode</a>
+    </div>
+    <div class="docs-nav-group">
+      <div class="docs-nav-label">Macros</div>
+      <a href="#macros">The macro system</a>
+      <a href="#blocks">The block editor</a>
+      <a href="#recorder">The recorder</a>
+      <a href="#ui-mapping">UI mapping</a>
+      <a href="#sharing">Sharing macros</a>
+    </div>
+    <div class="docs-nav-group">
+      <div class="docs-nav-label">Reference</div>
+      <a href="#interface">The interface</a>
+      <a href="#safety-docs">Safety framework</a>
+      <a href="#shortcuts">Keyboard shortcuts</a>
+      <a href="#settings-ref">Settings reference</a>
+      <a href="#updates">Update checking</a>
+      <a href="#storage">Where your data lives</a>
+      <a href="#custom-tools">Adding your own tools</a>
+      <a href="#build">Building from source</a>
+    </div>
+    <div class="docs-nav-group">
+      <div class="docs-nav-label">Notes</div>
+      <a href="#antivirus">Antivirus warnings</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+      <a href="#platforms">Platform support</a>
+      <a href="#licensing">Licensing</a>
+    </div>
+  </aside>
+
+  <main class="docs-content">
+    <p class="docs-title">Docs / Kestrel</p>
+
+    <h2 id="install">Installation</h2>
+    <p>Kestrel runs on Windows 10 and 11. There are two ways to install it: the packaged installer, or from source if you want to read or change the code.</p>
+
+    <h3>From the installer</h3>
+    <ol>
+      <li>Download <code>KestrelSetup.exe</code> from the <a href="https://github.com/ibrahim12012/Kestrel/releases">releases page</a>. Free, no account required.</li>
+      <li>Run it and accept the licence agreement. There is an optional "launch at Windows startup" task, unchecked by default.</li>
+      <li>Add an API key in Settings for whichever provider you want to use.</li>
+    </ol>
+    <div class="callout warn">Windows will probably warn you about the installer. Kestrel is not code-signed yet, so SmartScreen shows "unrecognised app" the first time. Choose "More info" then "Run anyway". See <a href="#antivirus">antivirus warnings</a> for why this happens and what is being done about it.</div>
+
+    <h3>From source</h3>
+    <pre><code>python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py</code></pre>
+    <p>Python 3.11 or newer. Two packages are optional: <code>SpeechRecognition</code> and <code>PyAudio</code> are only needed for voice. Kestrel checks for them at startup and hides the microphone if they are missing, so skipping them costs you nothing else. <code>PyAudio</code> is the fiddliest dependency in the list, so skip it if you do not plan to talk to it.</p>
+
+    <h3>First launch</h3>
+    <p>The first screen asks what to call your assistant. That name is what it calls itself in chat, and it is also the wake word if you enable voice later. You can change it any time in Settings. After that you are in the chat.</p>
+    <p>You do not need an API key to get in. The recorder, the block editor and macro playback all work with nothing configured. The key is only needed for anything that involves the model.</p>
+
+    <h2 id="setup">First-time setup</h2>
+    <p>Kestrel gets faster as you build a macro library, because a task that exists as a macro runs directly instead of going through the model again. A short first session is worth doing.</p>
+    <h3>1. Tell it your browser</h3>
+    <p>Type <code>My preferred browser is Firefox</code>, or Chrome, or Edge. This affects every web task from then on.</p>
+    <h3>2. Build navigation macros</h3>
+    <p>Say <code>Go to YouTube</code>, <code>Go to Google</code> and a couple more of the sites you use most. Each becomes a macro instead of a full autonomous run next time.</p>
+    <h3>3. Build search macros</h3>
+    <p>Try <code>Search for "test" on Google</code> and <code>Search for "test" on YouTube</code>. Kestrel generalizes the pattern, so future searches take any term rather than only "test".</p>
+    <h3>4. Add the things you repeat</h3>
+    <p>A morning routine, a work setup, a music habit. Anything you do the same way twice is worth teaching once.</p>
+    <h3>5. Check it is using macros</h3>
+    <p>Open the console from the tray menu. A line reading <code>[tool] Executing function: go_to_youtube</code> means the macro ran directly, rather than a full step-by-step autonomous log.</p>
+
+    <h2 id="models">Models and profiles</h2>
+    <p>Kestrel is bring your own key. It talks to the provider you chose directly, with the key you pasted into Settings. There is no Kestrel account, no plan and no server of ours in the middle.</p>
+
+    <h3>Four providers</h3>
+    <table>
+      <tr><th>Provider</th><th>Models</th></tr>
+      <tr><td>Google Gemini</td><td>Gemini 3 Flash (default), Gemini 3.1 Pro, Gemini 2.5 Flash</td></tr>
+      <tr><td>OpenAI</td><td>GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano</td></tr>
+      <tr><td>Anthropic</td><td>Claude Sonnet 5, Claude Opus 5, Claude Haiku 4.5</td></tr>
+      <tr><td>Local</td><td>Any OpenAI-compatible endpoint on your own machine or network: Ollama, LM Studio, llama.cpp, vLLM and similar</td></tr>
+    </table>
+    <p>A dropdown in the chat input switches which model answers, without changing anything else. Chat, macros, autonomous mode and the whole safety framework behave identically whichever is active. Add a key for a provider in Settings and its models appear in the dropdown.</p>
+    <div class="callout">Gemini 3 Flash is the default because it is the one built for computer use specifically, which matters when screenshots and clicking are most of the work. A local model keeps everything on your machine, at the cost of whatever your hardware can run.</div>
+    <p>Keys are stored in the Windows Credential Manager, not in a plaintext file next to the app.</p>
+
+    <h3>Assistant profiles</h3>
+    <p>A profile is a whole assistant: its name, the provider and model behind it, and the instructions it works from. Keep a fast cheap one for everyday questions and a stronger one for real work, then switch between them without going into Settings.</p>
+    <p>The name is not cosmetic. It is the wake word, so naming a profile "Vera" means "Vera, open my email" wakes that profile with its own model and instructions.</p>
+    <div class="callout">Upgrading from an older version does not reset anything. The assistant you already set up becomes your first profile automatically.</div>
+
+    <h2 id="chat">Chat</h2>
+    <p>Replies stream in as they are generated. Conversations are kept in a local database with titles, so you can search across everything you have asked and pick a thread back up. Messages can be copied, edited and resent, or read aloud.</p>
+
+    <h3>Attachments</h3>
+    <p>Attach from the chat box with the paperclip, or drag a file onto it. Each file appears as a removable chip above the input, and its content is folded into your next message. Several files can go on one message. Content is capped at 20,000 characters per file, with a marker where it was cut, so you always know you are looking at part of something.</p>
+    <p>Supported: plain text, Markdown, JSON, CSV, logs, config formats (YAML, TOML, INI, XML, <code>.env</code>), HTML and CSS, most source-code extensions, plus <code>.pdf</code>, <code>.docx</code> and <code>.xlsx</code>. Images (<code>.png</code>, <code>.jpg</code>, <code>.gif</code>, <code>.bmp</code>, <code>.webp</code>) go in as images for models that can see.</p>
+
+    <h3>Extended thinking</h3>
+    <p>A toggle in the chat box, set per message. Turn it on for something that needs working through and the model reasons at length before replying. Leave it off for everything else and keep the answers quick. A marker shows while it is thinking, rather than a frozen window.</p>
+
+    <h3>Screenshots</h3>
+    <p><span class="hotkey">Ctrl+Alt+S</span> drops a screenshot into the chat from anywhere, including while another application has focus. Useful for asking what an error message means or what a chart is showing, without alt-tabbing to describe it.</p>
+
+    <h3>Export and backup</h3>
+    <p>A single chat exports to Markdown or JSON. Separately, a full backup writes chats, macros, profiles and settings into one archive, and restores from it. The backup is written to a temporary file and moved into place at the end, so an interrupted backup cannot overwrite a good one with a half-written file.</p>
+
+    <h2 id="files">Files and documents</h2>
+    <p>Three tools, each with a distinct job.</p>
+    <ul>
+      <li><strong>Read a file.</strong> Point it at a file that already exists (plain text, code, config, <code>.pdf</code>, <code>.docx</code>, <code>.xlsx</code>) and its content comes back for you to ask questions about. Read-only: there is no edit-in-place tool, so a requested change comes back as a new file.</li>
+      <li><strong>Generate a file.</strong> Creates a new file and saves it, then opens it in whatever application Windows associates with that type. Formats: plain text, Markdown, CSV, Word (<code>.docx</code>), PDF and Excel (<code>.xlsx</code>). A Word file gets real headings and paragraphs, a PDF is laid out and paginated rather than a printed text dump, and a spreadsheet gets a header row and real cells.</li>
+      <li><strong>Merge to PDF.</strong> Combines several existing files, in the order given, into one PDF. Images become full pages, an existing PDF's pages are copied in unchanged, and text files are rendered onto new pages titled with their own filename. Anything that cannot be converted is skipped and named, rather than failing the whole merge.</li>
+    </ul>
+    <p>Generated files land in <code>Documents\Kestrel Files</code> by default, configurable in Settings. Names never collide: a second <code>report.pdf</code> becomes <code>report (2).pdf</code> rather than overwriting the first. The chat gives you a link that opens the containing folder with the file selected.</p>
+
+    <h2 id="web">Web access</h2>
+    <p>Three levels of depth. Kestrel picks the shallowest one that answers the question.</p>
+    <ul>
+      <li><strong>Search.</strong> Returns a short list of titled results with snippets and links, the way you would scan a results page. It does not fetch the full text of each result, so it suits quick facts and current information. If a snippet is not enough, it says so rather than inventing detail.</li>
+      <li><strong>Read a page.</strong> Fetches one URL and extracts the actual article: headings, paragraphs and links. Navigation, scripts and boilerplate are stripped. Images worth looking at are pulled out and downscaled first, so a page full of photographs costs a sensible number of tokens.</li>
+      <li><strong>Crawl a site.</strong> For questions like "what does this company do" or "find the pricing page". It looks for a sitemap, falls back to following links, and reads up to a page budget. It checks <code>robots.txt</code> and respects it, caps how much it downloads per page, and stays on the origin it started from.</li>
+    </ul>
+
+    <h2 id="voice">Voice</h2>
+    <p>Click the microphone in the chat input to talk instead of typing. Your speech is transcribed, sent through the same pipeline as a typed message, and the reply is read back aloud.</p>
+    <p>Enable the wake word in Settings to use it hands-free. It listens for whatever the active profile is currently named, so renaming the assistant changes what triggers it.</p>
+    <p>While it is speaking you can interrupt by clicking the microphone or saying "stop". When it proposes an autonomous task, saying "yes", "go ahead" or "accept" starts it, and "no", "cancel" or "don't" refuses it, so a whole task can run without the keyboard.</p>
+    <div class="callout">Speech recognition runs through Google's free Web Speech API, so voice needs an internet connection and is subject to its rate limits. This is true even when your model is local, and it is the one part of Kestrel that leaves the machine regardless of which provider you chose.</div>
+
+    <h2 id="decision-tree">How Kestrel decides what to do</h2>
+    <p>Every message is checked against three questions, in order:</p>
+    <table>
+      <tr><th>Step</th><th>Question</th><th>Result</th></tr>
+      <tr><td>1</td><td>Can I answer this from my own knowledge?</td><td>Answers directly, then offers to act if relevant</td></tr>
+      <tr><td>2</td><td>Is this a one-step action or an existing macro?</td><td>Runs it directly, no screenshots</td></tr>
+      <tr><td>3</td><td>Does this need several steps or screen navigation?</td><td>Proposes autonomous mode and waits for confirmation</td></tr>
+    </table>
+    <p>Autonomous mode has no way to start on its own. The model appends a suggestion tag to its reply, the app catches the tag and shows a confirmation card, and only an explicit accept starts a live run.</p>
+
+    <h2 id="autonomous">Autonomous mode</h2>
+    <p>Once a run starts, every turn is exactly three things:</p>
+    <ol>
+      <li>Take a screenshot of the screen as it is now</li>
+      <li>Call exactly one tool</li>
+      <li>Take another screenshot and look at what changed</li>
+    </ol>
+    <p>That repeats until the goal is met or the step budget runs out. One action per turn is the rule that keeps a run recoverable: there is never more than a single step between a decision and a fresh look at reality.</p>
+    <p>While it works, an overlay shows what it is doing and stays out of the way of the clicks. When the goal is reached the overlay clears immediately, and you get a specific line about what happened rather than a generic "task complete".</p>
+
+    <h3>Rules it follows</h3>
+    <ul>
+      <li>Never uses the Windows search bar.</li>
+      <li>Never builds a URL by hand. It navigates the way a person would: browser, then site, then the site's own search.</li>
+      <li>Never suggests autonomous mode without asking in plain language first.</li>
+      <li>Anything that looks destructive needs explicit approval, every time.</li>
+    </ul>
+    <p>Typing works for accented and non-Latin text. Characters are sent by code point through the Win32 input API rather than by keyboard layout, so <code>café</code>, <code>Müller</code> and <code>こんにちは</code> arrive intact.</p>
+    <p>You can stop a run at any point with <span class="hotkey">Esc</span>, with <span class="hotkey">Ctrl+Alt+X</span>, or by throwing the mouse into a screen corner.</p>
+
+    <h2 id="macros">The macro system</h2>
+    <p>A macro is a saved task. Once one exists it becomes a tool the assistant can call by name, so "put on my morning playlist" stops being a reasoning problem and becomes a function call. Each macro is a JSON record describing its steps, turned into a real callable function at load time.</p>
+    <p>There are two kinds:</p>
+    <ul>
+      <li><strong>Literal.</strong> An exact recording, tied to whatever was originally clicked or typed. A macro born from "search Soprano on YouTube" only ever searches Soprano.</li>
+      <li><strong>Generalized.</strong> The same macro rewritten with real parameters, so it becomes <code>search_youtube(query)</code> instead of being locked to one search term.</li>
+    </ul>
+    <p>Generalization runs automatically after autonomous mode saves a macro. The model never writes Python directly: it returns validated JSON describing the parameters and steps, and the source is generated and syntax-checked on Kestrel's side. If a task is not confident enough to generalize well, the literal version is kept exactly as recorded, so generalizing never breaks something that already worked.</p>
+    <div class="callout">Clicks in a generalized macro try a described element first ("the YouTube search bar") and fall back to the recorded coordinates if that cannot be found. That keeps a macro working through small layout changes without needing the model every time.</div>
+
+    <h2 id="blocks">The block editor</h2>
+    <p>Every macro opens as a stack of coloured blocks. Drag to reorder, click any value to change it in place. There is no code, and no way to build something that will not run.</p>
+    <p>Blocks are coloured by what they do:</p>
+    <table>
+      <tr><th>Category</th><th>Blocks</th></tr>
+      <tr><td>Action</td><td>Click, right-click, type text, press Enter, press a key combo, open app, new browser tab, run a macro</td></tr>
+      <tr><td>Control</td><td>Wait, repeat <em>n</em>, repeat forever, repeat until colour, if colour is / else, stop</td></tr>
+      <tr><td>Sensing</td><td>Wait for colour change at a point</td></tr>
+    </table>
+    <p>Sensing is what lets a macro wait for a page to actually load instead of guessing at a delay.</p>
+
+    <h3>Macros inside macros</h3>
+    <p>Any macro you have saved can be dropped into another one as a single block, shown as <code>run macro open_chrome</code>. Build one small reliable piece, use it everywhere, and fix it in one place when the application it drives changes.</p>
+    <p>Saved macros appear under a <strong>Macros</strong> heading in the Add Block menu, so adding one is the same gesture as adding any other block. A macro is never offered inside itself. If you build a loop anyway, where A calls B and B calls A, it is refused at run time rather than hanging the app, and nesting is capped at eight levels deep.</p>
+
+    <h2 id="recorder">The recorder</h2>
+    <p>For tasks too precise for autonomous mode to get exactly right, record it yourself with global hotkeys. No AI involved and no API key needed.</p>
+    <table>
+      <tr><th>Key</th><th>Action</th></tr>
+      <tr><td><span class="hotkey">F6</span></td><td>Right-click at the current mouse position</td></tr>
+      <tr><td><span class="hotkey">F7</span></td><td>Left-click at the current mouse position</td></tr>
+      <tr><td><span class="hotkey">F8</span></td><td>Toggle typing mode (press again or <span class="hotkey">Esc</span> to commit)</td></tr>
+      <tr><td><span class="hotkey">F9</span></td><td>Press Enter</td></tr>
+      <tr><td><span class="hotkey">F10</span></td><td>Stop recording</td></tr>
+    </table>
+    <p>Name it, save, and it is registered immediately. No restart needed. Each of these five triggers can be rebound to a different key, or to a mouse button (left, right, middle, back or forward) instead of the default function keys.</p>
+
+    <h2 id="ui-mapping">UI mapping</h2>
+    <p>For an application you use often, you can skip recording macros one at a time. Ask Kestrel to map the application and it walks that app's accessibility structure on its own, the same structure a screen reader uses, collecting every button, field, menu and list with its name, its role and where it is. What it finds is compiled into named actions the assistant can call.</p>
+    <p>The difference this makes is what happens when something moves. A macro built on coordinates breaks the moment you resize a window, change your display scaling or plug in a second monitor. A macro built on an element's identity keeps working, because the button is still called Send.</p>
+    <ul>
+      <li>A small status window shows progress while a mapping run is active, and closes when it finishes.</li>
+      <li>Elements are kept with the panel, dialog or tab they belong to, so a "Save" in one dialog is not confused with a "Save" in another.</li>
+      <li>Destructive-looking actions (delete, purge, submit order and similar) are recorded but never triggered during mapping. Nothing that permanently changes data gets clicked.</li>
+      <li>Where an application exposes nothing useful, such as a game, a canvas or a remote desktop, it falls back to coordinates and says so rather than pretending it found something.</li>
+    </ul>
+
+    <h2 id="sharing">Sharing macros</h2>
+    <p>Macros export as <code>.ktl</code> files, one at a time from a macro's share button, or all at once from the Macros toolbar. A <code>.ktl</code> file holds the macro specs unchanged, so an export reads back anywhere. Import one and it is immediately callable, by you and by the assistant.</p>
+    <div class="callout">One use worth knowing: an IT admin maps a company's internal tool once, exports the macros, and everyone on the team imports the file. Nobody else has to map or record anything.</div>
+
+    <h2 id="interface">The interface</h2>
+    <ul>
+      <li><strong>Light and dark themes</strong> that change instantly across every dialog, menu, dropdown and tray icon. No restart, and nothing left behind in the other theme's colours.</li>
+      <li><strong>Seven languages</strong>: English, French, Spanish, Portuguese, Arabic, Hindi and Chinese, switched live. Arabic gets a proper right-to-left layout rather than mirrored text in a left-to-right frame.</li>
+      <li><strong>Undo</strong> for anything destructive, as a bar that lets you take it back, rather than a dialog that makes you promise first.</li>
+      <li><strong>A live console</strong> opened from the tray menu, mirroring every tool call, reply and background log line as it happens, colour-coded by kind. It replays everything logged since launch the moment you open it, so you are never looking at a blank window wondering whether something already happened.</li>
+      <li><strong>A tray icon</strong> and a global show and hide, so it stays out of the way until you want it.</li>
+      <li><strong>Always on top</strong> for when you need it watching over another window.</li>
+      <li><strong>A rounded, frameless window</strong> that still snaps, tiles and resizes like a normal Windows window, because the operating system is still doing the moving.</li>
+    </ul>
+
+    <h2 id="safety-docs">Safety framework</h2>
+    <p>Kestrel can click, type and run commands on your machine. These limits apply whichever model provider you configured, and they are enforced in code rather than by the model's judgement. The model cannot talk its way past a gate it does not participate in.</p>
+
+    <h3>Command allow-list</h3>
+    <p>The command tool tokenizes its input and only runs a base command that is explicitly on the list. Chaining (<code>&amp;</code>, <code>&amp;&amp;</code>, <code>|</code>), redirection (<code>&gt;</code>, <code>&lt;</code>) and <code>%variable%</code> expansion are refused outright. Kestrel runs exactly one plain command with plain arguments, never a shell string that could hide something else inside it.</p>
+    <table>
+      <tr><th>Tier</th><th>Examples</th><th>Treatment</th></tr>
+      <tr><td>Low</td><td><code>dir</code>, <code>type</code>, <code>whoami</code>, <code>tasklist</code>, <code>ipconfig</code>, <code>ping</code>, <code>findstr</code></td><td>Read-only, runs freely</td></tr>
+      <tr><td>Medium</td><td><code>python</code>, <code>node</code>, <code>npm</code>, <code>pip</code>, <code>git</code>, <code>winget</code>, <code>copy</code>, <code>move</code>, <code>mkdir</code></td><td>Counts against the session cap</td></tr>
+      <tr><td>High</td><td><code>del</code>, <code>rd</code>, <code>taskkill</code>, <code>reg</code>, <code>shutdown</code>, <code>netsh</code></td><td>Approval dialog every time, plus the cap</td></tr>
+      <tr><td>Blocked</td><td><code>format</code>, <code>diskpart</code>, <code>bcdedit</code>, <code>fsutil</code>, <code>vssadmin</code>, <code>powershell</code>, <code>wmic</code>, <code>cipher</code></td><td>Refused unconditionally, at any tier</td></tr>
+    </table>
+
+    <h3>Per-session action caps</h3>
+    <p>Each risk tier has its own budget within a run: 100 low, 30 medium and 5 high by default, adjustable in Settings along with a manual reset. Force-closing an application counts as high risk. Hitting a cap does not end the conversation, it just means Kestrel has to stop and get a fresh session before doing more of that tier.</p>
+
+    <h3>Human handoff</h3>
+    <p>When autonomous mode recognises a CAPTCHA, an "I'm not a robot" checkbox or a two-factor prompt, it pauses instead of trying to click through it. A sound plays and a card appears in the chat asking you to take over. Clicking Continue resumes the run from a fresh screenshot.</p>
+
+    <h3>Confirmation before anything destructive</h3>
+    <p>Separate from the command allow-list, any interface action whose on-screen label matches a destructive word (delete, purge, format, submit order, checkout, cancel subscription, sign out and similar) requires confirmation before it runs, including inside a compiled mapping macro.</p>
+
+    <h3>Stopping a run</h3>
+    <p><span class="hotkey">Esc</span> and <span class="hotkey">Ctrl+Alt+X</span> both halt any running automation instantly from anywhere, even when Kestrel is not the focused window. Throwing the mouse into any screen corner is a failsafe that works without either shortcut being registered.</p>
+
+    <h3>Step ceiling</h3>
+    <p>A configurable cap, 3 to 100 with a default of 20, on how many steps one autonomous run can take before stopping on its own. It is a ceiling rather than a target, and a run almost always finishes well before reaching it.</p>
+
+    <h2 id="shortcuts">Keyboard shortcuts</h2>
+    <p>Four global shortcuts work system-wide, even when Kestrel is not the focused window. All are rebindable in Settings.</p>
+    <table>
+      <tr><th>Default</th><th>Action</th></tr>
+      <tr><td><span class="hotkey">Ctrl+Shift+Space</span></td><td>Show or hide the Kestrel window</td></tr>
+      <tr><td><span class="hotkey">Ctrl+Alt+P</span></td><td>Toggle always on top</td></tr>
+      <tr><td><span class="hotkey">Ctrl+Alt+S</span></td><td>Take a screenshot into the chat</td></tr>
+      <tr><td><span class="hotkey">Ctrl+Alt+X</span></td><td>Stop any running automation immediately</td></tr>
+    </table>
+    <p><span class="hotkey">Esc</span> also stops a running automation, and does nothing when nothing is running. It is not rebindable, and neither is the mouse-corner failsafe. Inside the window, Enter sends a message and Shift+Enter starts a new line; those are fixed conventions rather than shortcuts. The five recorder triggers are listed <a href="#recorder">above</a> and are only active while recording.</p>
+
+    <h2 id="settings-ref">Settings reference</h2>
+    <table>
+      <tr><th>Setting</th><th>Default</th><th>What it controls</th></tr>
+      <tr><td>Assistant name</td><td>Set on first run</td><td>What it calls itself in chat, and the wake word.</td></tr>
+      <tr><td>Provider and model</td><td>Gemini 3 Flash</td><td>Which model answers. Add a key for a provider and its models appear.</td></tr>
+      <tr><td>Theme</td><td>Follows Windows</td><td>Light or dark, applied instantly with no restart.</td></tr>
+      <tr><td>Language</td><td>English</td><td>One of seven, switched live.</td></tr>
+      <tr><td>Generated files folder</td><td><code>Documents\Kestrel Files</code></td><td>Where files it writes are saved.</td></tr>
+      <tr><td>Macro playback delay</td><td>1.0s</td><td>Pause between recorded steps during playback, 0.1 to 10s. Raise it for slower applications.</td></tr>
+      <tr><td>Max automation steps</td><td>20</td><td>Ceiling per autonomous run, 3 to 100.</td></tr>
+      <tr><td>Safety limits</td><td>100 / 30 / 5</td><td>Per-session action caps for low, medium and high-risk actions.</td></tr>
+      <tr><td>Wake word</td><td>Off</td><td>Hands-free voice trigger. Every wake-word behaviour, including saying "stop", is inactive until this is on.</td></tr>
+      <tr><td>Global shortcuts</td><td>See above</td><td>Rebind any of the four global hotkeys or the five recorder triggers.</td></tr>
+    </table>
+
+    <h2 id="updates">Update checking</h2>
+    <p>At startup Kestrel asks GitHub for the newest published release of <a href="https://github.com/ibrahim12012/Kestrel/releases">its own repository</a> and compares that tag against the version it is running. If the tag is higher you get a tray notification pointing at the release page. It checks only, and never installs anything itself: a self-installing updater for a binary that is not code-signed is exactly the shape of thing SmartScreen exists to distrust.</p>
+    <p>Two things have to be true for it to ever report anything, and both are about the repository rather than the app:</p>
+    <ul>
+      <li>There has to be a published <strong>Release</strong>. A tag or a commit is not a release. With none, GitHub answers 404 and the check goes quiet rather than guessing.</li>
+      <li>The release tag has to be a higher version than the one running. <code>v0.2.2</code> beats <code>0.2.1</code>; <code>v0.2.1-hotfix</code> does not, because the suffix is dropped before comparing.</li>
+    </ul>
+    <p>A fork points it somewhere else with <code>APP_UPDATE_REPO=owner/repo</code> in <code>.env</code>. Nothing is sent to the project: it is one unauthenticated GET to GitHub's public API, and any failure is swallowed so a check can never delay or break startup.</p>
+
+    <h2 id="storage">Where your data lives</h2>
+    <p>Chats, macros, profiles, generated files and settings are kept in your user data folder, not in the install directory. Kestrel never writes into its own folder at runtime, which keeps it working under Program Files and out of the way of your antivirus.</p>
+    <ul>
+      <li>Macros are plain JSON, one file each. You can read them, copy them and back them up like any other file.</li>
+      <li>Chats live in a local database.</li>
+      <li>API keys are in the Windows Credential Manager, not in a file.</li>
+      <li>Screenshots go to the model only during an autonomous run or when you take one deliberately. Nothing is captured in the background.</li>
+    </ul>
+
+    <h2 id="custom-tools">Adding your own tools</h2>
+    <p>Any function starting with <code>tool_</code> in <code>ai/actions.py</code> is detected automatically and shown in the Tools panel. Its signature and docstring are read to build the schema the model sees, so there is no second description to keep in sync.</p>
+    <pre><code>def tool_volume_up():
+    """Increase system volume by 10%."""
+    print("[tool] Volume increased")</code></pre>
+    <p>Click Refresh in the Tools tab. New tools appear immediately, with input fields generated from the signature.</p>
+
+    <h2 id="build">Building from source</h2>
+    <p>PyInstaller produces the executable, Inno Setup the installer.</p>
+    <pre><code>pip install -r requirements.txt pyinstaller
+pyinstaller --clean Kestrel.spec
+python tools/verify_build.py
+iscc installer\Kestrel.iss</code></pre>
+    <p><code>verify_build.py</code> reads the built binary's PE headers and reports whether it is packed, whether the version resource landed and whether it carries a signature. Run it before shipping anything, because a detection on a stale build tells you nothing about the current one.</p>
+    <p>Tests run anywhere, including Linux:</p>
+    <pre><code>pip install -r requirements-dev.txt
+pytest</code></pre>
+
+    <h2 id="antivirus">Antivirus warnings</h2>
+    <p>Expect them.</p>
+    <div class="callout warn">Kestrel installs global keyboard and mouse hooks, sends synthetic input, captures the screen, runs shell commands and sends screenshots to a remote API. That is a description of Kestrel and it is also a description of a remote access trojan. No scanner can tell the two apart from the outside. On top of that, the released binary is not code-signed yet, so SmartScreen shows "unknown publisher" regardless of what the file does.</div>
+    <p>What has been done about it: no UPX packing, a real version resource, an explicit manifest declaring the app never asks for administrator, nothing written into the install directory at runtime, and no screen-capture evasion anywhere. The build is as clean as an unsigned build can be.</p>
+    <p>What is left needs a code-signing certificate, which is a company-level purchase, plus a false-positive submission per release. Until then:</p>
+    <ul>
+      <li>The source is public. Every behaviour above is in it, and you can read exactly what it does.</li>
+      <li>Each release ships with a SHA-256 so you can check you have the file that was built.</li>
+      <li>You can build it yourself from source and skip the question.</li>
+    </ul>
+    <p>A detection name ending in <code>!ml</code> is a machine-learning verdict rather than a signature match, which is the standard false positive for anything built with PyInstaller.</p>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+    <h3>The app does not open after install</h3>
+    <p>Confirm the installer finished. Kestrel is not code-signed, so SmartScreen may add an extra "unrecognised app" step the first time; choose "Run anyway".</p>
+    <h3>The model is not responding</h3>
+    <p>Check the API key in Settings for the selected provider. This usually means the key is invalid, expired or out of quota with that provider directly. The console shows the actual error.</p>
+    <h3>A command was refused</h3>
+    <p>Only base commands on the fixed allow-list can run at all (see the <a href="#safety-docs">safety framework</a>), and the refusal message names what is allowed. This is intentional, not a bug, and there is no setting to expand the list.</p>
+    <h3>A macro clicks the wrong thing</h3>
+    <p>The application's layout has probably changed since the macro was recorded. Open it in the <a href="#blocks">block editor</a> and fix the step, or re-record it. A macro built through <a href="#ui-mapping">UI mapping</a> is more resilient to this than a recorded one, because it finds elements by name rather than position.</p>
+    <h3>The wake word is not working</h3>
+    <p>It is off by default; turn it on in Settings first. If it is on and still unresponsive, open the console. Transcription failures are logged there, which usually shows whether it is a microphone or network problem rather than the listener not running.</p>
+    <h3>Voice is missing entirely</h3>
+    <p>The microphone is hidden when <code>SpeechRecognition</code> and <code>PyAudio</code> are not installed. Install them and restart.</p>
+
+    <h2 id="platforms">Platform support</h2>
+    <p>Kestrel runs on Windows only, and that is what it is built out of rather than a porting backlog item.</p>
+    <ul>
+      <li>Reading the screen's structure goes through Windows UI Automation, which is how it can identify a button by name instead of guessing from pixels. macOS Accessibility and Linux AT-SPI are different APIs with different models, not a different import.</li>
+      <li>Typing characters by code point uses the Win32 input API directly, which is what makes accented and non-Latin text work regardless of keyboard layout.</li>
+      <li>Launching and focusing applications, process control, and system sounds are all Windows-specific.</li>
+      <li>Global hotkeys need root on Linux and do not work on macOS at all.</li>
+    </ul>
+    <p>Roughly a third of what Kestrel does would need rewriting per platform, not recompiling. The parts that are portable are kept that way on purpose because it makes them testable: the mapping traversal is written against an interface and tested with an in-memory fake, and the full test suite runs on Linux. That is a testing property, not a sign that a port is close.</p>
+
+    <h2 id="licensing">Licensing</h2>
+    <p>Kestrel is dual-licensed. Which licence applies depends on what you do with it, not on who you are.</p>
+    <ul>
+      <li><strong>GPL v3</strong> for individuals, for open-source projects, and for anyone willing to release their derivative work under the GPL v3 as well.</li>
+      <li><strong>Commercial</strong> for putting Kestrel in a proprietary product or into enterprise infrastructure without the GPL v3 obligations.</li>
+    </ul>
+    <p>The GPL binds you when you convey the software to someone else, not when you merely run it. Anything you produce with Kestrel is yours under either licence: the macros you record and the documents it writes are not derivative works. See <a href="licensing.html">Licensing</a> for the full picture.</p>
+    <div class="callout">Kestrel itself is free. Using a hosted model provider still requires your own API key from that provider, billed directly by them under your own agreement.</div>
+  </main>
+</div>
+
+<footer>
+  <div class="container">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a href="index.html" class="nav-logo">
+          <img src="kestrel.png" width="20" height="20" alt="">
+          Kestrel
+        </a>
+        <p>A desktop AI assistant for Windows.</p>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-title">Product</div>
+        <a href="index.html#features">Features</a>
+        <a href="index.html#how-it-works">How it works</a>
+        <a href="docs.html">Docs</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-title">Project</div>
+        <a href="https://github.com/ibrahim12012/Kestrel">Source on GitHub</a>
+        <a href="https://github.com/ibrahim12012/Kestrel/issues">Issues</a>
+        <a href="contact.html">Contact</a>
+        <a href="docs.html#build">Build from source</a>
+      </div>
+      <div class="footer-col">
+        <div class="footer-col-title">Legal</div>
+        <a href="licensing.html">Licensing</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="terms.html">Terms</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2026 the Kestrel authors. GPL v3, or a commercial licence.</p>
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

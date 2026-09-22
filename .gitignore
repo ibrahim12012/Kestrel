@@ -1,0 +1,57 @@
+# ── Secrets ──────────────────────────────────────────────────────────
+# .env holds API keys on a machine with no OS credential store, and is
+# the file most likely to be committed by accident. .env.example is the
+# template and IS tracked; nothing else matching .env* should be.
+.env
+.env.*
+!.env.example
+
+# ── Your data, not the project's ─────────────────────────────────────
+# Running from source puts the user data folder in the project root, so
+# a normal run leaves your own chats, macros and generated files sitting
+# in the working tree. None of it belongs in the repository. The app
+# creates each of these folders on demand, so losing them costs nothing.
+/data/
+/macros/
+/ai/generated/
+/ai/macros/
+/trees/
+# Written to USER_DATA_PATH, which IS the project root when running from
+# source, so this is your assistant profiles rather than a template.
+# ai/profiles.py creates a default one on first launch if it is absent.
+/profiles.json
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ─────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Build output ─────────────────────────────────────────────────────
+# PyInstaller writes dist/ and build/; Inno Setup writes the installer
+# into installer/Output/. Release binaries are attached to a GitHub
+# Release, not committed.
+/build/
+/dist/
+/installer/Output/
+*.manifest
+
+# ── Editors and OS ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ── Logs and scratch ─────────────────────────────────────────────────
+*.log
+*.bak
+*.tmp

@@ -1,0 +1,69 @@
+Kestrel is dual-licensed.
+
+You may use it under EITHER of the following, your choice:
+
+  1. The GNU General Public License, version 3 (GPL-3.0-only).
+     Free. The full text is in LICENSES/GPL-3.0.txt.
+
+  2. A Kestrel Commercial License, purchased from the copyright holder.
+     See COMMERCIAL-LICENSE.md.
+
+--------------------------------------------------------------------
+WHICH ONE APPLIES TO YOU
+
+Use the GPL if you are an individual, a hobbyist, a researcher, an
+open-source project, or anyone willing to release their own derivative
+work under the GPL as well.
+
+Buy a commercial license if you want to use Kestrel, or anything built
+from it, inside a proprietary or closed-source product, or in enterprise
+infrastructure, without the obligations the GPL places on you.
+
+The obligation people most often miss: the GPL applies when you CONVEY
+the software to someone else, not when you merely use it. Running
+Kestrel inside your company, unmodified and not distributed outside it,
+does not by itself require you to publish anything. Shipping a product
+that contains it, or a modified version of it, does.
+
+Using Kestrel as a tool to produce something is not covered by either
+license. Documents, macros and output you create with it are yours.
+
+--------------------------------------------------------------------
+COPYRIGHT
+
+Copyright (C) 2026 the Kestrel authors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>.
+
+--------------------------------------------------------------------
+CONTRIBUTIONS
+
+Selling a commercial license requires holding the rights to the whole
+work, so by submitting a contribution you license it to the copyright
+holder under the GPL AND grant the copyright holder the right to
+license your contribution to others under different terms, including a
+paid commercial license.
+
+If that is not something you want to grant, say so on the pull request
+rather than after it is merged.
+
+--------------------------------------------------------------------
+THIS IS NOT LEGAL ADVICE
+
+This arrangement has not been reviewed by a lawyer. Dual-licensing is
+well-trodden (Qt and MySQL are the usual examples), but the details of
+who owes what are specific to how a given user deploys the software.
+Have a lawyer read this before relying on it commercially.
+
+See COMMERCIAL-LICENSE.md, "Third-party obligations", for a dependency
+whose own licence directly affects this arrangement.

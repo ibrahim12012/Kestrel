@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# For running the test suite (tests/)
+pytest>=8.0.0
+
+# PyQt6 is already in requirements.txt - the GUI smoke tests (test_smoke.py)
+# use its "offscreen" platform plugin, so no real display is needed to run them.

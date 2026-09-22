@@ -1,0 +1,484 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ChatWidget</class>
+ <widget class="QWidget" name="ChatWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>655</width>
+    <height>543</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Chat</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+/* ── Base ── */
+QWidget#ChatWidget {
+    background-color: #0a0a0a;
+}
+
+/* ── Topbar ── */
+QWidget#topbar {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #1a1a1a;
+    min-height: 52px;
+    max-height: 52px;
+}
+QLabel#chatTitle {
+    color: #f2f2f2;
+    font-family: &quot;Syne&quot;;
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+
+QPushButton#btn_archive {
+    background-color: transparent;
+    color: #5c5c5c;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    font-size: 14px;
+}
+
+QPushButton#btn_archive:hover {
+    background-color: #161616;
+    color: #f2f2f2;
+    border-color: #1f1f1f;
+}
+
+/* ── Messages scroll area ── */
+QScrollArea#messagesScroll {
+    background-color: #0a0a0a;
+    border: none;
+}
+QScrollArea#messagesScroll &gt; QWidget &gt; QWidget {
+    background-color: #0a0a0a;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 5px;
+}
+QScrollBar::handle:vertical {
+    background: #232323;
+    border-radius: 2px;
+    min-height: 24px;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical { height: 0; }
+
+/* ── Message bubbles ── */
+QWidget#msgRowUser,
+QWidget#msgRowAi {
+    background: transparent;
+}
+QWidget#msgRowUser:hover,
+QWidget#msgRowAi:hover {
+    background-color: rgba(255,255,255,0.015);
+}
+
+QLabel#bubbleAi {
+    background-color: transparent;
+    color: #f2f2f2;
+    font-family: &quot;Segoe UI&quot;;
+    font-size: 13px;
+    border: 1px solid #1a1a1a;
+    border-radius: 4px 12px 12px 12px;
+    padding: 12px 16px;
+}
+QLabel#bubbleUser {
+    background-color: #161616;
+    color: #f2f2f2;
+    font-family: &quot;Segoe UI&quot;;
+    font-size: 13px;
+    border: 1px solid #1f1f1f;
+    border-radius: 12px 4px 12px 12px;
+    padding: 12px 16px;
+}
+
+/* ── Typing indicator ── */
+QWidget#typingIndicator {
+    background-color: transparent;
+    border: 1px solid #1a1a1a;
+    border-radius: 4px 12px 12px 12px;
+    padding: 12px 16px;
+    max-width: 80px;
+}
+
+/* ── Input area ── */
+QWidget#inputArea {
+    background-color: #0a0a0a;
+    border-top: 1px solid #1a1a1a;
+    max-height: 240px;
+}
+QWidget#inputWrapper {
+    background-color: #121212;
+    border: 1px solid #1f1f1f;
+    border-radius: 14px;
+}
+QWidget#inputWrapper:focus-within {
+    border-color: #3a3a3a;
+}
+QPlainTextEdit#chatInput {
+    background-color: transparent;
+    color: #f2f2f2;
+    font-family: &quot;Segoe UI&quot;;
+    font-size: 13px;
+    border: none;
+    padding: 0px;
+    selection-background-color: rgba(124,106,255,0.35);
+}
+QPlainTextEdit#chatInput::placeholder {
+    color: #5c5c5c;
+}
+QPushButton#sendBtn {
+    background-color: #7c6aff;
+    color: #ffffff;
+    border: none;
+    border-radius: 9px;
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    font-size: 16px;
+    font-weight: 700;
+}
+QPushButton#sendBtn:hover {
+    background-color: #8f7dff;
+}
+QPushButton#sendBtn:pressed {
+    background-color: #6a58e0;
+}
+QPushButton#micBtn {
+    background-color: transparent;
+    color: #9a9a9a;
+    border: 1px solid #232323;
+    border-radius: 9px;
+    min-width: 34px;
+    max-width: 34px;
+    min-height: 34px;
+    max-height: 34px;
+    font-size: 15px;
+}
+QPushButton#micBtn:hover {
+    background-color: #161616;
+    color: #f2f2f2;
+    border-color: #3a3a3a;
+}
+QPushButton#micBtn:checked {
+    background-color: rgba(214,69,69,0.15);
+    color: #e57373;
+    border-color: rgba(214,69,69,0.4);
+}
+
+/* ── Input tools ── */
+QPushButton#tool_join,
+QPushButton#tool_no_code,
+QPushButton#tool_flow {
+    background-color: transparent;
+    color: #5c5c5c;
+    font-family: &quot;Segoe UI&quot;;
+    font-size: 11px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 4px 10px;
+}
+QPushButton#tool_join:hover,
+QPushButton#tool_no_code:hover,
+QPushButton#tool_flow:hover {
+    background-color: #161616;
+    color: #9a9a9a;
+    border-color: #1f1f1f;
+}
+QLabel#inputHint {
+    color: #5c5c5c;
+    font-family: &quot;Segoe UI&quot;;
+    font-size: 10px;
+    background: transparent;
+}
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="chatMainLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QWidget" name="topbar" native="true">
+     <layout class="QHBoxLayout" name="topbarLayout">
+      <property name="spacing">
+       <number>10</number>
+      </property>
+      <property name="leftMargin">
+       <number>20</number>
+      </property>
+      <property name="topMargin">
+       <number>10</number>
+      </property>
+      <property name="rightMargin">
+       <number>16</number>
+      </property>
+      <property name="bottomMargin">
+       <number>10</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="chatTitle">
+        <property name="text">
+         <string>CSV data analysis</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer>
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="messagesScroll">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="messagesContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>655</width>
+        <height>399</height>
+       </rect>
+      </property>
+      <layout class="QVBoxLayout" name="messagesLayout">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>28</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>16</number>
+       </property>
+       <item>
+        <spacer>
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="inputArea" native="true">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>240</height>
+      </size>
+     </property>
+     <property name="sizeIncrement">
+      <size>
+       <width>0</width>
+       <height>0</height>
+      </size>
+     </property>
+     <property name="baseSize">
+      <size>
+       <width>0</width>
+       <height>0</height>
+      </size>
+     </property>
+     <layout class="QVBoxLayout" name="inputAreaLayout">
+      <property name="spacing">
+       <number>0</number>
+      </property>
+      <property name="sizeConstraint">
+       <enum>QLayout::SetDefaultConstraint</enum>
+      </property>
+      <property name="leftMargin">
+       <number>28</number>
+      </property>
+      <property name="topMargin">
+       <number>14</number>
+      </property>
+      <property name="rightMargin">
+       <number>28</number>
+      </property>
+      <property name="bottomMargin">
+       <number>20</number>
+      </property>
+      <item>
+       <widget class="QWidget" name="inputWrapper" native="true">
+        <layout class="QVBoxLayout" name="inputWrapperLayout">
+         <property name="spacing">
+          <number>0</number>
+         </property>
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <layout class="QHBoxLayout" name="inputTopLayout">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>14</number>
+           </property>
+           <property name="topMargin">
+            <number>12</number>
+           </property>
+           <property name="rightMargin">
+            <number>12</number>
+           </property>
+           <property name="bottomMargin">
+            <number>10</number>
+           </property>
+           <item>
+            <widget class="QPlainTextEdit" name="chatInput">
+             <property name="styleSheet">
+              <string notr="true">background:transparent;color:#f2f2f2;font-family:&quot;Segoe UI&quot;;font-size:15px;border:none;padding:0px;</string>
+             </property>
+             <property name="lineWidth">
+              <number>1</number>
+             </property>
+             <property name="verticalScrollBarPolicy">
+              <enum>Qt::ScrollBarAsNeeded</enum>
+             </property>
+             <property name="horizontalScrollBarPolicy">
+              <enum>Qt::ScrollBarAlwaysOff</enum>
+             </property>
+             <property name="placeholderText">
+              <string>Ask anything…</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="micBtn">
+             <property name="cursor">
+              <cursorShape>PointingHandCursor</cursorShape>
+             </property>
+             <property name="toolTip">
+              <string>Talk</string>
+             </property>
+             <property name="text">
+              <string/>
+             </property>
+             <property name="icon">
+              <iconset>
+               <normaloff>../../assets/mic-idle.svg</normaloff>../../assets/mic-idle.svg</iconset>
+             </property>
+             <property name="iconSize">
+              <size>
+               <width>16</width>
+               <height>16</height>
+              </size>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="sendBtn">
+             <property name="font">
+              <font>
+               <pointsize>-1</pointsize>
+               <weight>87</weight>
+               <bold>true</bold>
+              </font>
+             </property>
+             <property name="cursor">
+              <cursorShape>PointingHandCursor</cursorShape>
+             </property>
+             <property name="toolTip">
+              <string>Send (Enter)</string>
+             </property>
+             <property name="text">
+              <string/>
+             </property>
+             <property name="icon">
+              <iconset>
+               <normaloff>../../assets/arrow-up-solid-full.svg</normaloff>../../assets/arrow-up-solid-full.svg</iconset>
+             </property>
+             <property name="iconSize">
+              <size>
+               <width>20</width>
+               <height>20</height>
+              </size>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

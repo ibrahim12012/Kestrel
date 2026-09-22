@@ -1,0 +1,89 @@
+# Kestrel - direct dependencies only.
+# This file lists what the code actually imports; pip will pull in the
+# correct transitive dependencies (e.g. protobuf, grpcio, requests) on its own.
+#
+# Note: only google-genai is needed for Gemini - NOT the older
+# google-generativeai package, which the code doesn't use (see
+# ai/main.py: `from google import genai`). openai/anthropic below are
+# separate, official SDKs for the other two providers ai/providers/
+# supports.
+
+# UI
+PyQt6>=6.4.0
+
+# Icons - Font Awesome Free / Material Design Icons bundled as Qt icon
+# fonts, both permissively licensed (SIL OFL 1.1 / Apache 2.0), used
+# instead of Unicode emoji throughout the app (see app/icons.py)
+qtawesome>=1.3.0
+
+# Global mouse-button hooks for the Recorder page's trigger shortcuts
+# (app/workers/recorder_worker.py) - same author/ecosystem as `keyboard`,
+# which handles the keyboard side of the same feature.
+mouse>=0.7.1
+
+# AI backend
+google-genai>=1.0.0
+openai>=1.50.0
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+
+# HTTP, used directly rather than only pulled in by the SDKs above:
+# ai/updater.py and ai/web_search.py's tool_web_search backend.
+requests>=2.31.0
+
+# Desktop automation
+pyautogui>=0.9.54
+keyboard>=0.13.5
+pyperclip>=1.8.0
+Pillow>=10.0.0
+AppOpener>=1.7
+
+# App focus detection (tool_ouvrir_application - bring an already-running
+# app to the foreground instead of launching a duplicate). Optional in the
+# sense that ai/actions.py guards the import: without them, that function
+# still works, it just always calls AppOpener's open() directly.
+psutil>=5.9.0
+pywin32>=306; sys_platform == "win32"
+
+# Voice assistant (optional - see ai/main.py's guarded imports)
+# SpeechRecognition needs a working microphone + PyAudio to listen.
+# Audio playback uses winsound, which ships with Python on Windows
+# no separate package needed, and the feature is skipped gracefully
+# on platforms where it isn't available.
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.13
+
+# Dropping a .pdf into the chat input (see ai/file_context.py). Optional
+# in the same sense as the packages above: file_context guards the
+# import, so dropping a .txt/.json still works without it - only .pdf
+# extraction needs it.
+pypdf>=4.0.0
+
+# tool_generate_file's docx/pdf/xlsx output (ai/file_generation.py).
+# Optional in the same guarded sense as pypdf just above - each is
+# imported lazily inside its own generate_* function and turns a
+# missing package into a clear "pip install ..." message returned to
+# the model instead of a crash; txt/md/csv generation needs none of
+# these three.
+python-docx>=1.1.0
+reportlab>=4.0.0
+openpyxl>=3.1.0
+
+# OS secure credential storage for your API keys (ai/main.py), so they
+# are never kept in a plaintext file. Backends: Windows Credential
+# Manager, macOS Keychain, Secret Service (Linux).
+keyring>=24.0.0
+
+# Optional: crash reporting (ai/telemetry.py), opt-in and off by
+# default. The app runs fine without this installed - telemetry just
+# reports itself as unavailable until both this and a SENTRY_DSN exist.
+sentry-sdk>=2.0.0
+
+# Phase 2 UI Discovery Engine (see ai/discovery/) - structural
+# accessibility parsing via Windows UI Automation, used by
+# tool_discover_application_ui to map an app without vision. Optional in
+# the same guarded sense as pywin32 above: ai/discovery/accessibility.py
+# guards the import and tool_discover_application_ui reports a clear
+# error instead of crashing if it's missing; nothing else in the app
+# imports ai.discovery at module load time.
+uiautomation>=2.0.20; sys_platform == "win32"

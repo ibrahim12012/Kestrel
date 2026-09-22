@@ -1,0 +1,417 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MacrosWidget</class>
+ <widget class="QWidget" name="MacrosWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Macros</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+/* ── Base ── */
+QWidget#MacrosWidget {
+    background-color: #0a0a0a;
+}
+
+/* ── Topbar ── */
+QWidget#topbar {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #1a1a1a;
+    min-height: 52px;
+    max-height: 52px;
+}
+QLabel#pageTitle {
+    color: #f2f2f2;
+    font-family: "Syne";
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+QLabel#toolCount {
+    color: #9a9a9a;
+    font-family: "Segoe UI";
+    font-size: 11px;
+    background: transparent;
+    padding: 2px 8px;
+    border: 1px solid #262626;
+    border-radius: 8px;
+}
+QPushButton#btnRefresh, QPushButton#btnRecordMacro {
+    background-color: transparent;
+    color: #5c5c5c;
+    border: 1px solid #1f1f1f;
+    border-radius: 7px;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0px;
+}
+QPushButton#btnRefresh:hover, QPushButton#btnRecordMacro:hover {
+    background-color: #161616;
+    color: #f2f2f2;
+    border-color: #3a3a3a;
+}
+
+/* ── Filter / Search bar ── */
+QWidget#filterBar {
+    background-color: #0a0a0a;
+    border-bottom: 1px solid #161616;
+    min-height: 56px;
+    max-height: 56px;
+}
+QLineEdit#searchInput {
+    background-color: #121212;
+    color: #f2f2f2;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    border: 1px solid #1f1f1f;
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 32px;
+    max-height: 32px;
+    selection-background-color: rgba(255,255,255,0.18);
+}
+QLineEdit#searchInput:focus {
+    border-color: #3a3a3a;
+}
+/* ── Scroll area ── */
+QScrollArea#macrosScroll {
+    background-color: #0a0a0a;
+    border: none;
+}
+QScrollArea#macrosScroll > QWidget > QWidget {
+    background-color: #0a0a0a;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 5px;
+}
+QScrollBar::handle:vertical {
+    background: #232323;
+    border-radius: 2px;
+    min-height: 24px;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical { height: 0; }
+
+/* ── Macro cards ── */
+QWidget#macroCard {
+    background-color: #121212;
+    border: 1px solid #1f1f1f;
+    border-radius: 10px;
+}
+QWidget#macroCard:hover {
+    border-color: #3a3a3a;
+    background-color: #151515;
+}
+QLabel#macroName {
+    color: #f2f2f2;
+    font-family: "Segoe UI";
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}
+QLabel#badgeAI {
+    color: #b7acff;
+    font-family: "Segoe UI";
+    font-size: 9px;
+    font-weight: 700;
+    background-color: rgba(124,106,255,0.12);
+    border: 1px solid rgba(124,106,255,0.4);
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+QLabel#badgeUser {
+    color: #9a9a9a;
+    font-family: "Segoe UI";
+    font-size: 9px;
+    font-weight: 700;
+    background-color: transparent;
+    border: 1px solid #2e2e2e;
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+QLabel#badgeCustom {
+    color: #6e6e6e;
+    font-family: "Segoe UI";
+    font-size: 9px;
+    font-weight: 700;
+    background-color: transparent;
+    border: 1px solid #232323;
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+QLabel#macroDesc {
+    color: #5c5c5c;
+    font-family: "Segoe UI";
+    font-size: 11px;
+    background: transparent;
+}
+QLabel#paramName {
+    color: #9a9a9a;
+    font-family: "Courier New";
+    font-size: 11px;
+    background: transparent;
+    min-width: 100px;
+}
+QLabel#paramType {
+    color: #5c5c5c;
+    font-family: "Courier New";
+    font-size: 11px;
+    background: transparent;
+}
+QLineEdit#paramInput {
+    background-color: #0a0a0a;
+    color: #f2f2f2;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    border: 1px solid #1f1f1f;
+    border-radius: 6px;
+    padding: 4px 10px;
+    min-height: 26px;
+    max-height: 26px;
+}
+QLineEdit#paramInput:focus {
+    border-color: #3a3a3a;
+}
+QPushButton#btnRun {
+    background-color: #7c6aff;
+    color: #ffffff;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    border-radius: 7px;
+    min-width: 72px;
+    max-width: 72px;
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0px 12px;
+}
+QPushButton#btnRun:hover {
+    background-color: #8f7dff;
+}
+QPushButton#btnRun:pressed {
+    background-color: #6a58e0;
+}
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="macrosMainLayout">
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+
+   <!-- ── Topbar ── -->
+   <item>
+    <widget class="QWidget" name="topbar" native="true">
+     <layout class="QHBoxLayout" name="topbarLayout">
+      <property name="spacing">
+       <number>10</number>
+      </property>
+      <property name="leftMargin">
+       <number>20</number>
+      </property>
+      <property name="topMargin">
+       <number>10</number>
+      </property>
+      <property name="rightMargin">
+       <number>16</number>
+      </property>
+      <property name="bottomMargin">
+       <number>10</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="pageTitle">
+        <property name="text">
+         <string>Macros</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="toolCount">
+        <property name="text">
+         <string>0 macros</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer>
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btnRecordMacro">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>Record a new macro</string>
+        </property>
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btnRefresh">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>Refresh</string>
+        </property>
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ── Filter bar ── -->
+   <!-- ── Filter bar ── -->
+<item>
+ <widget class="QWidget" name="filterBar" native="true">
+  <layout class="QHBoxLayout" name="filterBarLayout">
+
+   <property name="spacing">
+    <number>10</number>
+   </property>
+
+   <property name="leftMargin">
+    <number>20</number>
+   </property>
+
+   <property name="topMargin">
+    <number>10</number>
+   </property>
+
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+
+   <!-- Search input -->
+   <item>
+    <widget class="QLineEdit" name="searchInput">
+     <property name="placeholderText">
+      <string>Search macros…</string>
+     </property>
+    </widget>
+   </item>
+
+   <!-- Filter dropdown (app/styled_dropdown.py::StyledDropdown) is built
+        and inserted here at runtime, in MacrosWidget.__init__ - see that
+        file's comment for why this is a custom-drawn popup rather than a
+        QComboBox: the previous filterCombo QComboBox couldn't be fully
+        reskinned via QSS (native popup chrome, square corners, mismatched
+        arrow), which is the same reason chat_widget.py's model picker and
+        settings_widget.py's theme picker already use StyledDropdown
+        instead of a plain QComboBox. -->
+
+  </layout>
+ </widget>
+</item>
+
+   <!-- ── Scroll area with grid of cards ── -->
+   <item>
+    <widget class="QScrollArea" name="macrosScroll">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="macrosContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>900</width>
+        <height>600</height>
+       </rect>
+      </property>
+      <layout class="QVBoxLayout" name="macrosContentsLayout">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>20</number>
+       </property>
+       <property name="topMargin">
+        <number>20</number>
+       </property>
+       <property name="rightMargin">
+        <number>20</number>
+       </property>
+       <property name="bottomMargin">
+        <number>20</number>
+       </property>
+       <!-- Cards grid injected by macros_widget.py at runtime -->
+       <item>
+        <widget class="QWidget" name="cardsGrid" native="true">
+         <layout class="QGridLayout" name="cardsGridLayout">
+          <property name="spacing">
+           <number>12</number>
+          </property>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer>
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
