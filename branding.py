@@ -91,10 +91,13 @@ FILE_TYPE_PROGID = f"{APP_NAME}.MacroPack.1"
 ICON_PATH = "assets/icon/Purple-transparent-1000.png"
 WINDOWS_ICO_PATH = "assets/icon/Kestrel.ico"
 
-# The other half of the tray's "working" blink. It only has to be
-# visibly different from ICON_PATH; both being the same file is a blink
-# that does nothing.
-ICON_ALT_PATH = "assets/icon/BlackPurple-transparent-1000.png"
+# The other half of the tray's "working" blink: the same all-purple mark
+# at 40% opacity, so the icon pulses rather than switching to a different
+# logo. It only has to be visibly different from ICON_PATH; both being the
+# same file is a blink that does nothing. Every place the app shows its
+# logo uses the all-purple mark (the .exe and installer icon, Kestrel.ico,
+# is generated from ICON_PATH too).
+ICON_ALT_PATH = "assets/icon/PurpleDim-transparent-1000.png"
 
 # What the window reports as its title.
 #

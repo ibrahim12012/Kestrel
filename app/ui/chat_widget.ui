@@ -424,10 +424,6 @@ QLabel#inputHint {
              <property name="text">
               <string/>
              </property>
-             <property name="icon">
-              <iconset>
-               <normaloff>../../assets/mic-idle.svg</normaloff>../../assets/mic-idle.svg</iconset>
-             </property>
              <property name="iconSize">
               <size>
                <width>16</width>
@@ -456,10 +452,6 @@ QLabel#inputHint {
              </property>
              <property name="text">
               <string/>
-             </property>
-             <property name="icon">
-              <iconset>
-               <normaloff>../../assets/arrow-up-solid-full.svg</normaloff>../../assets/arrow-up-solid-full.svg</iconset>
              </property>
              <property name="iconSize">
               <size>

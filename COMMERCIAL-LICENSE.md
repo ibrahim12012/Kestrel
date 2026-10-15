@@ -88,7 +88,7 @@ are compatible with both the GPL and a proprietary distribution:
 ```
 AppOpener  Pillow  PyAudio  SpeechRecognition  anthropic  google-genai
 keyboard  keyring  mouse  openai  openpyxl  psutil  pyautogui  pypdf
-pyperclip  python-docx  python-dotenv  pywin32  qtawesome  reportlab
+pyperclip  python-docx  python-dotenv  pywin32  reportlab
 requests  sentry-sdk  uiautomation
 ```
 

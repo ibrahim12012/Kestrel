@@ -30,19 +30,37 @@ Public surface:
                                            at all (e.g. no accessibility
                                            backend available on this OS)
 
-Typical use (see ai/actions.py: tool_discover_application_ui):
+Typical use (see ai/actions.py: run_mapping, and tool_use_mapped_control
+for pressing a mapped control by name):
 
-    from ai.discovery import map_application_ui, compile_action_tree
+    from ai.discovery import map_application_ui
 
     tree = map_application_ui("Notepad")
     tree.save()                       # ai/discovery/trees/notepad_tree.json
-    compile_action_tree(tree)         # ai/generated/notepad_actions.py
 """
 
 from ai.discovery.errors import DiscoveryError
 from ai.discovery.tree import ActionTree, AppStateNode, DiscoveredAction, ScreenStatus
-from ai.discovery.mapper import map_application_ui
-from ai.discovery.compiler import compile_action_tree
+
+# The mapper and the compiler are loaded on first use. Importing them
+# imports uiautomation, which is slow to load and sets the process's DPI
+# mode as a side effect, and the Mapping page imports this package (for
+# ai.discovery.events) while the app is starting.
+_LOADED_ON_USE = {
+    "map_application_ui": "ai.discovery.mapper",
+    "compile_action_tree": "ai.discovery.compiler",
+}
+
+
+def __getattr__(name):
+    module = _LOADED_ON_USE.get(name)
+    if module is None:
+        raise AttributeError(f"module 'ai.discovery' has no attribute {name!r}")
+    import importlib
+
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "DiscoveryError",

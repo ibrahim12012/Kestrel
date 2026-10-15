@@ -1,5 +1,9 @@
 ; installer/Kestrel.iss
 ; =====================
+; Superseded by the native installer (installer/build_installer.py, see
+; installer/README.md), which also replaces an install made with this
+; script. Kept as a fallback.
+;
 ; Inno Setup script for Kestrel. Wraps the `dist/Kestrel/` folder produced by
 ; `pyinstaller Kestrel.spec` (see README.md's "Building a Windows Executable")
 ; into a real installer: Start Menu/Desktop shortcuts, an Add/Remove

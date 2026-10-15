@@ -212,8 +212,8 @@ class VoiceWorker(QObject):
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
 
         print("\n Listening...")
-        if ai_main.winsound is not None:
-            ai_main.winsound.Beep(800, 150)
+        # Waits for the sound to finish, so the mic doesn't hear it.
+        ai_main.play_notification_sound("listen_start", wait=True)
 
         stop_listening = recognizer.listen_in_background(
             mic, _on_phrase, phrase_time_limit=PHRASE_TIME_LIMIT_SECONDS
@@ -232,7 +232,7 @@ class VoiceWorker(QObject):
         if self._cancel_event.is_set():
             return None, True
 
-        if captured["audio"] is not None and ai_main.winsound is not None:
-            ai_main.winsound.Beep(600, 150)
+        if captured["audio"] is not None:
+            ai_main.play_notification_sound("listen_end")
 
         return captured["audio"], False

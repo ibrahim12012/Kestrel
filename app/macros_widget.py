@@ -53,6 +53,13 @@ from app.styled_dropdown import StyledDropdown
 from app.undo_bar import UndoBar
 from app.i18n import tr
 
+# The filter bar: the search box and the filter dropdown share one
+# height, and the bar leaves the same gap above and below them. Its last
+# pixel row is the border line, which the bottom margin includes.
+FILTER_CONTROL_HEIGHT = 34
+FILTER_BAR_GAP = 11
+FILTER_BAR_HEIGHT = FILTER_BAR_GAP + FILTER_CONTROL_HEIGHT + FILTER_BAR_GAP + 1
+
 # Values shown in the filter dropdown (also doubles as its display
 # labels - see MacrosWidget.__init__). Kept as a module-level constant
 # rather than re-declared inline so _rebuild_cards'/_apply_filters'
@@ -113,20 +120,15 @@ QPushButton#btnRefresh:hover, QPushButton#btnRecordMacro:hover {{
     border-color: {c['border_strong']};
 }}
 QWidget#filterBar {{
-    /* Bug fix: this used to be a hard 48px (min/max-height, so genuinely
-       fixed either way), with 10px top+bottom margins on filterBarLayout
-       eating 20px of that - leaving only 28px of actual content height
-       for searchInput below, which itself needs a bit more than its own
-       28px min/max-height once its border+padding are added on top (Qt's
-       style sheet box model adds border/padding OUTSIDE min/max-height,
-       unlike CSS's border-box default) - the box was being asked to fit
-       into less room than it needed, and visibly cropped as a result.
-       56px here, and searchInput's own height bumped a little too below,
-       leaves comfortable room either way. */
+    /* No height here: it is set in code (MacrosWidget.__init__, from
+       FILTER_BAR_HEIGHT), together with the layout margins, so the
+       search box and the filter dropdown sit with the same space above
+       and below them. A min/max-height in QSS is a CONTENT height: Qt
+       adds padding and border on top of it, which is how the search box
+       used to come out 46px tall in a 56px bar, 10px of room above it
+       and none below. */
     background-color: {c['bg_base']};
     border-bottom: 1px solid {c['bg_elevated']};
-    min-height: 56px;
-    max-height: 56px;
 }}
 QLineEdit#searchInput {{
     background-color: {c['bg_panel']};
@@ -135,9 +137,9 @@ QLineEdit#searchInput {{
     font-size: 12px;
     border: 1px solid {c['bg_input']};
     border-radius: 8px;
-    padding: 6px 12px;
-    min-height: 32px;
-    max-height: 32px;
+    /* Height comes from setFixedHeight (FILTER_CONTROL_HEIGHT); the text
+       centres itself vertically, so only horizontal padding here. */
+    padding: 0px 12px;
     selection-background-color: rgba({c['accent_rgb']},0.35);
 }}
 QLineEdit#searchInput:focus {{
@@ -255,6 +257,18 @@ QLineEdit#paramInput {{
 QLineEdit#paramInput:focus {{
     border-color: {c['border_strong']};
 }}
+QPushButton#btnEditMacro, QPushButton#btnDeleteMacro {{
+    /* The share, edit and delete icons on each card. These had no rule
+       of their own, so they took main_window's cascaded page background
+       and were drawn as small native push buttons, darker than the card
+       behind them. */
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0px;
+}}
+QPushButton#btnEditMacro:hover {{ background-color: {c['bg_hover_strong']}; }}
+QPushButton#btnDeleteMacro:hover {{ background-color: rgba({c['danger_rgb']},0.15); }}
 QPushButton#btnRun {{
     background-color: {c['accent']};
     color: {c['white']};
@@ -541,16 +555,8 @@ class MacrosWidget(QWidget):
         # the .ui itself, same pattern as StyledDropdown's other call sites.
         self._filterDropdown = StyledDropdown(_FILTER_OPTIONS, "All", self._theme, min_width=150)
         self._filterDropdown.setObjectName("filterCombo")
-        # Bug fix: StyledDropdown's button has no explicit height of its
-        # own (see styled_dropdown.py - it's sized off padding+font
-        # sizeHint), while searchInput right next to it in this same
-        # filterBar has an explicit min/max-height in the stylesheet
-        # above. The two never matched, so the filter box visibly sat
-        # shorter than the search box. Pin it to searchInput's own
-        # rendered height instead of a hardcoded number, so it keeps
-        # matching even if searchInput's height rule above ever changes.
-        self._filterDropdown.set_fixed_height(self.searchInput.sizeHint().height())
         self.filterBarLayout.addWidget(self._filterDropdown)
+        self._size_filter_bar()
 
         # Import/export live next to Record and Refresh rather than in
         # the .ui, for the same reason those two get their icons in
@@ -581,6 +587,22 @@ class MacrosWidget(QWidget):
         self.btnRefresh.clicked.connect(self.refresh)
 
         self._apply_toolbar_icons()
+
+    def _size_filter_bar(self) -> None:
+        """
+        One height for the search box and the filter dropdown, and equal
+        space above and below them (see FILTER_BAR_HEIGHT). Done in code
+        rather than in the style sheet because QSS heights exclude padding
+        and borders; this is the height that is actually drawn.
+        """
+        self.searchInput.setFixedHeight(FILTER_CONTROL_HEIGHT)
+        self._filterDropdown.set_fixed_height(FILTER_CONTROL_HEIGHT)
+        left, _, right, _ = self.filterBarLayout.getContentsMargins()
+        # The bottom margin includes the bar's 1px border line.
+        self.filterBarLayout.setContentsMargins(left, FILTER_BAR_GAP, right, FILTER_BAR_GAP + 1)
+        self.filterBarLayout.setAlignment(self.searchInput, Qt.AlignmentFlag.AlignVCenter)
+        self.filterBarLayout.setAlignment(self._filterDropdown, Qt.AlignmentFlag.AlignVCenter)
+        self.filterBar.setFixedHeight(FILTER_BAR_HEIGHT)
 
     def _apply_toolbar_icons(self) -> None:
         """

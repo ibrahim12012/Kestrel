@@ -34,6 +34,7 @@ from ai.log import log_input
 from paths import BASE_PATH
 from app.workers.title_worker import TitleWorker
 from app.i18n import tr
+from app.image_viewer import ClickableThumbnail, ViewerImage, open_images, rounded_thumbnail
 root_path = BASE_PATH
 
 
@@ -1429,11 +1430,25 @@ def _make_row(text: str, role: str, theme_name: str = "dark", message_id: int | 
     return row
 
 
-# Message content for a screenshot captured via the global shortcut is
-# stored as this marker instead of plain text - [[SCREENSHOT:<path>]] - so
-# _append_bubble can tell it apart from a normal message on both a live
-# capture and a later chat reload, and render the actual image either way.
-SCREENSHOT_MARKER_RE = re.compile(r"^\[\[SCREENSHOT:(.+)\]\]$")
+# Message content for a screenshot is stored as this marker instead of
+# plain text - [[SCREENSHOT:<path>]] - so _append_bubble can tell it apart
+# from a normal message on both a live capture and a later chat reload,
+# and render the actual image either way. "|ai" at the end marks one the
+# assistant took itself (tool_screenshot); without it, it is one the user
+# took with the shortcut. A Windows path never contains "|".
+SCREENSHOT_MARKER_RE = re.compile(r"^\[\[SCREENSHOT:(.+?)(?:\|(ai))?\]\]$")
+
+# The screens an autonomous run looked at, one per step, saved to a folder
+# of their own - [[RUN_SCREENSHOTS:<folder>]]. Rendered as a strip of
+# thumbnails that open the viewer on the whole set.
+RUN_SCREENSHOTS_MARKER_RE = re.compile(r"^\[\[RUN_SCREENSHOTS:(.+)\]\]$")
+
+# How big a screenshot is shown in the chat, in logical pixels. Big enough
+# to tell what is on it; a click opens it at full size.
+SCREENSHOT_PREVIEW_MAX_WIDTH = 460
+SCREENSHOT_PREVIEW_MAX_HEIGHT = 300
+RUN_STRIP_THUMB_HEIGHT = 74
+RUN_STRIP_MAX_THUMBS = 6
 
 # Same idea, for a command the AI actually ran via ai.actions.tool_run_command
 # sharing its real output in the chat - [[TERMINAL:<base64 JSON>]]. The
@@ -1492,13 +1507,31 @@ def decode_file_marker(encoded: str) -> dict:
     return json.loads(payload)
 
 
+# The web pages an answer drew on - [[SOURCES:<base64 JSON list of
+# {url, title, kind}>]], kind "read" (opened) or "found" (a search result
+# only). Shown as a card of links above the answer.
+SOURCES_MARKER_RE = re.compile(r"^\[\[SOURCES:([A-Za-z0-9+/=]+)\]\]$")
+
+
+def encode_sources_marker(entries: "list[dict]") -> str:
+    payload = json.dumps([
+        {"url": e.get("url", ""), "title": e.get("title", ""), "kind": e.get("kind", "read")}
+        for e in entries if e.get("url")
+    ])
+    return f"[[SOURCES:{base64.b64encode(payload.encode('utf-8')).decode('ascii')}]]"
+
+
+def decode_sources_marker(encoded: str) -> "list[dict]":
+    return json.loads(base64.b64decode(encoded.encode("ascii")).decode("utf-8"))
+
+
 # Same idea, for lightweight system/status notices (e.g. "automation
 # stopped via the global shortcut") - [[SYSTEM:<icon>|<text>]]. These are
 # NOT a normal chat message from either side: no avatar-side alignment, no
 # Copy/Read-aloud/Edit actions (which would be nonsensical on a status
 # line), just a small centered pill, closer to how Discord/Slack render a
-# system event than a conversational message. `icon` is one of
-# app.icons._ICON_MAP's keys.
+# system event than a conversational message. `icon` is the name of one
+# of the app's icons (assets/icons/<name>.svg).
 SYSTEM_MARKER_RE = re.compile(r"^\[\[SYSTEM:([a-z0-9_-]+)\|(.+)\]\]$", re.DOTALL)
 
 # Appended to the PROMPT (never to the displayed/saved bubble) when a
@@ -1538,7 +1571,10 @@ def _make_system_row(icon_name: str, text: str, theme_name: str = "dark") -> QWi
     pill_layout.setSpacing(6)
 
     icon_lbl = QLabel()
-    icon_lbl.setPixmap(icons.pixmap(icon_name, c, 11, "text_faint"))
+    # The name comes from the saved message, so an old chat can name an
+    # icon that no longer exists; that shows a neutral one rather than
+    # failing to open the chat.
+    icon_lbl.setPixmap(icons.pixmap(icon_name if icons.has(icon_name) else "dots", c, 11, "text_faint"))
     icon_lbl.setStyleSheet("background: transparent; border: none;")
     pill_layout.addWidget(icon_lbl)
 
@@ -1555,12 +1591,107 @@ def _make_system_row(icon_name: str, text: str, theme_name: str = "dark") -> QWi
     return row
 
 
-def _make_screenshot_row(path: str, theme_name: str = "dark") -> QWidget:
+def _make_sources_row(entries: "list[dict]", theme_name: str = "dark") -> QWidget:
     """
-    Chat bubble for a screenshot captured via the global shortcut - same
-    row shape as a normal assistant bubble, but showing a scaled
-    thumbnail instead of text. Falls back to a plain notice if the file
-    is missing (moved/deleted since capture).
+    The pages behind an answer, the way chat assistants list theirs: the
+    ones read, then the search results only seen in a listing. Each is a
+    link (title, then the site), opening in the browser.
+    """
+    from urllib.parse import urlparse
+    from html import escape
+    c = theme.colors(theme_name)
+    read = [e for e in entries if e.get("kind") != "found"]
+    found = [e for e in entries if e.get("kind") == "found"]
+
+    row = QWidget()
+    row.setObjectName("msgRowAi")
+    row.setStyleSheet("background: transparent;")
+    h = QHBoxLayout(row)
+    h.setContentsMargins(28, 6, 36, 4)
+
+    card = QWidget()
+    card.setObjectName("sourcesCard")
+    card.setStyleSheet(
+        f"QWidget#sourcesCard {{ background-color: {c['bg_elevated']}; border: 1px solid {c['border']}; "
+        "border-radius: 10px; }"
+        "QLabel { background: transparent; border: none; }"
+    )
+    card.setMaximumWidth(MESSAGE_MAX_WIDTH)
+    column = QVBoxLayout(card)
+    column.setContentsMargins(12, 9, 12, 10)
+    column.setSpacing(4)
+
+    header = QHBoxLayout()
+    header.setSpacing(6)
+    header_icon = QLabel()
+    header_icon.setPixmap(icons.pixmap("external", c, 12, "text_faint"))
+    header.addWidget(header_icon)
+    parts = []
+    if read:
+        parts.append(tr("Read {n} page(s)", n=len(read)))
+    if found:
+        parts.append(tr("{n} search result(s)", n=len(found)))
+    title = QLabel("  \u00b7  ".join(parts) or tr("Sources"))
+    title.setStyleSheet(f"color: {c['text_muted']}; font-family: \"Segoe UI\"; font-size: 11.5px; font-weight: 600;")
+    header.addWidget(title)
+    header.addStretch(1)
+    column.addLayout(header)
+
+    for entry in (read + found)[:12]:
+        url = entry.get("url", "")
+        domain = urlparse(url).netloc.removeprefix("www.")
+        label = escape(entry.get("title") or domain or url)
+        link = QLabel(
+            f'<a href="{escape(url, quote=True)}" style="color:{c["accent"]}; text-decoration:none;">{label}</a>'
+            f'<span style="color:{c["text_faint"]};">  \u00b7  {escape(domain)}</span>'
+        )
+        link.setTextFormat(Qt.TextFormat.RichText)
+        link.setOpenExternalLinks(True)
+        link.setToolTip(url)
+        link.setWordWrap(True)
+        link.setStyleSheet("font-family: \"Segoe UI\"; font-size: 12px;")
+        column.addWidget(link)
+    if len(read + found) > 12:
+        more = QLabel(tr("and {n} more", n=len(read + found) - 12))
+        more.setStyleSheet(f"color: {c['text_faint']}; font-family: \"Segoe UI\"; font-size: 11px;")
+        column.addWidget(more)
+
+    h.addWidget(card)
+    h.addStretch(1)
+    return row
+
+
+def _make_compaction_row(text: str, theme_name: str = "dark", on_view=None) -> QWidget:
+    """
+    Where a conversation was compacted (ai/compaction.py): the messages
+    above this line reach the model as a summary, the ones below as they
+    are. Same centred pill as a status note, plus "View summary", since
+    what the model now works from is worth being able to read.
+    """
+    c = theme.colors(theme_name)
+    row = _make_system_row("compress", text, theme_name)
+    row.setObjectName("msgRowCompaction")
+    if on_view is not None:
+        pill_layout = row.layout().itemAt(1).widget().layout()
+        view = QPushButton(tr("View summary"))
+        view.setCursor(Qt.CursorShape.PointingHandCursor)
+        view.setStyleSheet(
+            f"QPushButton {{ color: {c['accent']}; background: transparent; border: none; "
+            "font-family: \"Segoe UI\"; font-size: 11px; padding: 0px 0px 0px 6px; }"
+            f"QPushButton:hover {{ color: {c['accent_hover']}; text-decoration: underline; }}"
+        )
+        view.clicked.connect(lambda _=False: on_view())
+        pill_layout.addWidget(view)
+    return row
+
+
+def _make_screenshot_row(path: str, theme_name: str = "dark", taken_by_ai: bool = False) -> QWidget:
+    """
+    Chat row for a screenshot - the assistant's (tool_screenshot) or one
+    taken with the shortcut when no message was being written. Shows the
+    image large enough to read, rounded, and opens it full size on click.
+    Falls back to a plain notice if the file is gone (moved or deleted
+    since it was taken).
     """
     c = theme.colors(theme_name)
     row = QWidget()
@@ -1574,8 +1705,8 @@ def _make_screenshot_row(path: str, theme_name: str = "dark") -> QWidget:
     content_vbox = QVBoxLayout()
     content_vbox.setSpacing(6)
 
-    pixmap = QPixmap(path)
-    if pixmap.isNull():
+    preview = rounded_thumbnail(path, SCREENSHOT_PREVIEW_MAX_WIDTH, SCREENSHOT_PREVIEW_MAX_HEIGHT) if os.path.isfile(path) else None
+    if preview is None:
         row_box = QHBoxLayout()
         row_box.setSpacing(6)
         icon_lbl = QLabel()
@@ -1589,14 +1720,11 @@ def _make_screenshot_row(path: str, theme_name: str = "dark") -> QWidget:
         row_box.addWidget(label)
         content_vbox.addLayout(row_box)
     else:
-        thumb = pixmap.scaledToWidth(320, Qt.TransformationMode.SmoothTransformation)
-        img_label = QLabel()
-        img_label.setObjectName("screenshotThumb")
-        img_label.setPixmap(thumb)
-        img_label.setStyleSheet(
-            f"border:1px solid {c['bg_input']}; border-radius:8px; background:transparent;"
+        thumb = ClickableThumbnail(preview, theme_name, tr("Open full size"))
+        thumb.clicked.connect(
+            lambda: open_images([ViewerImage(path, _screenshot_caption(taken_by_ai))], parent=thumb, theme_name=theme_name)
         )
-        content_vbox.addWidget(img_label)
+        content_vbox.addWidget(thumb)
 
         caption_box = QHBoxLayout()
         caption_box.setSpacing(6)
@@ -1604,7 +1732,7 @@ def _make_screenshot_row(path: str, theme_name: str = "dark") -> QWidget:
         caption_icon.setPixmap(icons.pixmap("camera", c, 11, "text_faint"))
         caption_icon.setStyleSheet("background: transparent; border: none;")
         caption_box.addWidget(caption_icon)
-        caption = QLabel(tr("Screenshot captured - attached to your next message."))
+        caption = QLabel(_screenshot_caption(taken_by_ai) + "  \u00b7  " + tr("click to open"))
         caption.setObjectName("screenshotCaption")
         caption.setWordWrap(True)
         caption.setStyleSheet(_screenshot_caption_style(c))
@@ -1615,6 +1743,112 @@ def _make_screenshot_row(path: str, theme_name: str = "dark") -> QWidget:
     h.addLayout(content_vbox)
     h.addSpacerItem(spacer)
 
+    return row
+
+
+def _screenshot_caption(taken_by_ai: bool) -> str:
+    if taken_by_ai:
+        return tr("Screenshot {name} took", name=ai_main.get_assistant_name())
+    return tr("Screenshot")
+
+
+def _run_screenshot_images(folder: str) -> "list[ViewerImage]":
+    """The step screenshots in an autonomous run's folder, in step order."""
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.lower().endswith((".png", ".jpg")))
+    except OSError:
+        return []
+    images = []
+    for i, name in enumerate(names, 1):
+        images.append(ViewerImage(os.path.join(folder, name), tr("Step {n} of {total}", n=i, total=len(names))))
+    return images
+
+
+def _make_run_screenshots_row(folder: str, theme_name: str = "dark") -> QWidget:
+    """
+    What an autonomous run looked at: a strip of its step screenshots,
+    newest last. A click opens the viewer on the whole run, so it can be
+    stepped through with the arrow keys. Written into the chat when the
+    run ends (MainWindow._on_autonomous_finished); only the folder's
+    path is stored, never the images.
+    """
+    c = theme.colors(theme_name)
+    images = _run_screenshot_images(folder)
+
+    row = QWidget()
+    row.setObjectName("msgRowAi")
+    row.setStyleSheet("background: transparent;")
+    h = QHBoxLayout(row)
+    h.setContentsMargins(28, 6, 36, 10)
+    h.setSpacing(0)
+
+    column = QVBoxLayout()
+    column.setSpacing(6)
+
+    header = QHBoxLayout()
+    header.setSpacing(6)
+    header_icon = QLabel()
+    header_icon.setPixmap(icons.pixmap("camera", c, 11, "text_faint"))
+    header_icon.setStyleSheet("background: transparent; border: none;")
+    header.addWidget(header_icon)
+    if images:
+        text = tr("{count} screens from this run  \u00b7  click one to step through them", count=len(images))
+    else:
+        text = tr("The screenshots from this run are no longer available.")
+    header_label = QLabel(text)
+    header_label.setStyleSheet(_screenshot_caption_style(c))
+    header.addWidget(header_label)
+    header.addStretch(1)
+    column.addLayout(header)
+
+    if images:
+        strip = QHBoxLayout()
+        strip.setSpacing(6)
+        # The last few steps: that is where a run's outcome is visible.
+        start = max(0, len(images) - RUN_STRIP_MAX_THUMBS)
+        for index in range(start, len(images)):
+            preview = rounded_thumbnail(images[index].path, RUN_STRIP_THUMB_HEIGHT * 16 // 9, RUN_STRIP_THUMB_HEIGHT, 7)
+            if preview is None:
+                continue
+            thumb = ClickableThumbnail(preview, theme_name, images[index].caption)
+            thumb.clicked.connect(
+                lambda i=index, t=thumb: open_images(images, index=i, parent=t, theme_name=theme_name)
+            )
+            strip.addWidget(thumb)
+        if start > 0:
+            more = QPushButton(tr("+{n} earlier", n=start))
+            more.setCursor(Qt.CursorShape.PointingHandCursor)
+            more.setStyleSheet(_msg_action_btn_style(c))
+            more.clicked.connect(lambda _=False, b=more: open_images(images, index=0, parent=b, theme_name=theme_name))
+            strip.insertWidget(0, more)
+        strip.addStretch(1)
+        column.addLayout(strip)
+
+    h.addLayout(column, 1)
+    return row
+
+
+def _make_attachments_row(paths: "list[str]", theme_name: str = "dark") -> QWidget:
+    """
+    The images sent with a user message, above its text: without these, a
+    sent screenshot left nothing in the chat but "Sent 1 file(s).", so
+    there was no seeing afterwards what had actually been sent.
+    """
+    row = QWidget()
+    row.setObjectName("msgRowUserAttachments")
+    row.setStyleSheet("background: transparent;")
+    h = QHBoxLayout(row)
+    h.setContentsMargins(28, 10, 36, 0)
+    h.setSpacing(6)
+    h.addStretch(1)
+    images = [ViewerImage(p, os.path.basename(p)) for p in paths]
+    for index, image in enumerate(images):
+        preview = rounded_thumbnail(image.path, 220, 150, 9) if os.path.isfile(image.path) else None
+        if preview is None:
+            continue
+        thumb = ClickableThumbnail(preview, theme_name, tr("Open full size"))
+        thumb.clicked.connect(lambda i=index, t=thumb: open_images(images, index=i, parent=t, theme_name=theme_name))
+        h.addWidget(thumb)
     return row
 
 
@@ -1894,9 +2128,7 @@ class LogoTypingIndicator(QLabel):
     # per-theme asset. Ordered - first one that exists on disk wins.
     _LOGO_CANDIDATES = (
         "Purple-transparent-1000.png",
-        "BlackPurple-transparent-1000.png",
-        "White-transparent-1000.png",
-        "icon.png",
+        "Purple-1000.png",
     )
 
     def __init__(self, theme_name: str = "dark", size: int = 26, parent=None):
@@ -2105,8 +2337,8 @@ def _make_thinking_row(theme_name: str = "dark") -> QWidget:
     # inconsistently (a different, often clashing, style depending on
     # the OS/font) and read as an odd, out-of-place "sticker" next to the
     # rest of the app's actual icon set. A real vector icon from the same
-    # icon set every other button in the app already uses (app/icons.py,
-    # Font Awesome) is what belongs here instead.
+    # icon set every other button in the app already uses (app/icons.py)
+    # is what belongs here instead.
     header.setIcon(icons.icon("brain", c, "text_secondary"))
     header.setIconSize(QSize(13, 13))
     header.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -2369,11 +2601,27 @@ def _pixmap_from_pil(image, size: int = ATTACHMENT_PREVIEW_SIZE) -> "QPixmap | N
         return None
 
 
+def _save_attachment_image(image) -> "str | None":
+    """Writes a PIL image to the app's attachments folder; its path, or
+    None if it could not be written."""
+    try:
+        from paths import USER_DATA_PATH
+        folder = os.path.join(USER_DATA_PATH, "attachments")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"image_{int(time.time() * 1000)}.png")
+        image.save(path, format="PNG")
+        return path
+    except Exception as e:
+        print(f"[chat] Couldn't keep a copy of the attached image: {e}")
+        return None
+
+
 def _make_attachment_chip(
     filename: str,
     theme_name: str = "dark",
     is_image: bool = False,
     preview: "QPixmap | None" = None,
+    on_open=None,
 ) -> QWidget:
     """
     One file (or image) staged in the chat input, with an X to remove it
@@ -2416,6 +2664,17 @@ def _make_attachment_chip(
         thumb.setFixedSize(size, size)
         thumb.move(0, pad)
         thumb.setToolTip(filename)
+        if on_open is not None:
+            # A 64px tile is enough to tell images apart, not to check
+            # what is on one: a click opens it full size.
+            thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+            thumb.setToolTip(tr("{name} - click to open", name=filename))
+
+            def _release(event, callback=on_open, label=thumb):
+                if event.button() == Qt.MouseButton.LeftButton and label.rect().contains(event.position().toPoint()):
+                    callback()
+
+            thumb.mouseReleaseEvent = _release
         # No border-radius here: the corners are already painted into
         # the pixmap (see _pixmap_from_pil). A background tint shows
         # through them, which is what gives the tile a soft edge
@@ -2677,8 +2936,12 @@ class ChatWidget(QWidget):
         # arg that would otherwise land in _send_message's own (unrelated)
         # voice_reply bool parameter.
         self.sendBtn.clicked.connect(lambda: self._send_message())
+        # White on the accent fill in both themes, so set once.
+        self.sendBtn.setIcon(icons.icon("arrow-up", theme.colors(self._theme), "white"))
+        self.sendBtn.setIconSize(QSize(16, 16))
         self.micBtn.clicked.connect(self._on_mic_clicked)
-        self.set_mic_state("idle")  # themed icon from the first frame, not whatever the .ui's own static icon property shows
+        self.micBtn.setIconSize(QSize(16, 16))
+        self.set_mic_state("idle")  # themed icon from the first frame
 
         # Bug fix: the chat input's placeholder ("Ask Kestrel…") was set
         # once, statically, in the .ui file and never touched again in
@@ -3266,7 +3529,7 @@ class ChatWidget(QWidget):
                 self._set_attach_status_visible(True)
                 return
             self._set_attach_status_visible(False)
-            self._add_attachment(filename, image=image)
+            self._add_attachment(filename, image=image, path=path)
             return
 
         text, err = file_context.extract_text_from_file(path)
@@ -3323,17 +3586,21 @@ class ChatWidget(QWidget):
         if err or image is None:
             print(f"[chat] Couldn't stage screenshot {path}: {err}")
             return False
-        self._add_attachment(os.path.basename(path), image=image)
+        self._add_attachment(os.path.basename(path), image=image, path=path)
         return True
 
-    def _add_attachment(self, filename: str, text: "str | None" = None, image=None) -> None:
+    def _add_attachment(self, filename: str, text: "str | None" = None, image=None, path: "str | None" = None) -> None:
         # Exactly one of text/image is set - an image attachment carries
         # no extracted "text" at all (see file_context's module
         # docstring on why there's no OCR step), a file attachment
         # carries no image. _send_message below branches on which one
         # each entry has to decide whether it's folded into the prompt
         # string or queued as a real ImagePart.
-        entry = {"name": filename, "text": text, "image": image}
+        if image is not None and not (path and os.path.isfile(path)):
+            # An image with no file behind it (pasted): saved, so it can
+            # be opened now and still shown on the message later.
+            path = _save_attachment_image(image)
+        entry = {"name": filename, "text": text, "image": image, "path": path}
         chip = _make_attachment_chip(
             filename,
             self._theme,
@@ -3342,6 +3609,8 @@ class ChatWidget(QWidget):
             # picture and a screenshot taken with the global shortcut
             # both land here and both get one (see attach_screenshot).
             preview=_pixmap_from_pil(image) if image is not None else None,
+            on_open=(lambda: open_images([ViewerImage(path, filename)], parent=self, theme_name=self._theme))
+            if image is not None and path else None,
         )
         entry["chip"] = chip
         btn_remove = chip.findChild(QPushButton, "attachmentRemove")
@@ -3547,9 +3816,12 @@ class ChatWidget(QWidget):
 
         prompt = text
         image_attachments = []
+        image_paths = []
         for entry in self._pending_attachments:
             if entry.get("image") is not None:
                 image_attachments.append(entry["image"])
+                if entry.get("path"):
+                    image_paths.append(entry["path"])
                 continue
             block = file_context.format_attachment_block(entry["name"], entry["text"])
             prompt = f"{prompt}\n\n{block}" if prompt else block
@@ -3572,6 +3844,7 @@ class ChatWidget(QWidget):
 
         # Save to the DB + display immediately
         new_id = db.add_message(self._current_chat_id, "user", display_text)
+        db.add_attachments(new_id, image_paths)
         user_row = self._append_bubble(display_text, "user", message_id=new_id)
         # Deferred a tick rather than recentering inline: _clear_attachments()
         # a few lines up just collapsed the chip row, so the input area (and
@@ -3723,13 +3996,35 @@ class ChatWidget(QWidget):
     def _append_bubble(self, text: str, role: str, message_id: int | None = None, is_leaf: bool = False):
         stripped_text = text.strip()
         screenshot_match = SCREENSHOT_MARKER_RE.match(stripped_text)
+        run_screens_match = RUN_SCREENSHOTS_MARKER_RE.match(stripped_text)
+        sources_match = SOURCES_MARKER_RE.match(stripped_text)
         system_match = SYSTEM_MARKER_RE.match(stripped_text)
         terminal_match = TERMINAL_MARKER_RE.match(stripped_text)
         file_match = FILE_MARKER_RE.match(stripped_text)
+        if role == "user" and message_id is not None:
+            # Images sent with this message, shown above its text.
+            attached = db.get_attachments(message_id)
+            if attached:
+                self._insert_before_stretch(_make_attachments_row(attached, self._theme))
         if screenshot_match:
-            row = _make_screenshot_row(screenshot_match.group(1), self._theme)
+            row = _make_screenshot_row(
+                screenshot_match.group(1), self._theme, taken_by_ai=screenshot_match.group(2) == "ai"
+            )
+        elif run_screens_match:
+            row = _make_run_screenshots_row(run_screens_match.group(1), self._theme)
+        elif sources_match:
+            try:
+                row = _make_sources_row(decode_sources_marker(sources_match.group(1)), self._theme)
+            except Exception:
+                row = _make_system_row("external", tr("Sources (couldn't be read)"), self._theme)
         elif system_match:
-            row = _make_system_row(system_match.group(1), system_match.group(2), self._theme)
+            chat_id = self._current_chat_id
+            if (system_match.group(1) == "compress" and chat_id is not None
+                    and db.get_chat_summary(chat_id) is not None):
+                # The answer to /compact: with the summary one click away.
+                row = self._compaction_row(chat_id, system_match.group(2))
+            else:
+                row = _make_system_row(system_match.group(1), system_match.group(2), self._theme)
         elif terminal_match:
             try:
                 payload = decode_terminal_marker(terminal_match.group(1))
@@ -3752,8 +4047,30 @@ class ChatWidget(QWidget):
         else:
             row = _make_row(text, role, self._theme, message_id=message_id)
             self._wire_message_actions(row, role, message_id, is_leaf=is_leaf)
-        self._insert_before_stretch(row)
+            self._insert_before_stretch(row)
+            return row
+        self._insert_card(row)
         return row
+
+    def _insert_card(self, row: QWidget) -> None:
+        """
+        A card (screenshot, sources, terminal, file, note) arriving while a
+        reply is streaming in belongs to that reply, and goes above it:
+        that is the order the database has them in, so a reload shows the
+        same thing, and it keeps the reply the chat's last row, which is
+        the row attach_message_id gives the reply's id and Regenerate to.
+        Added below the streaming bubble, the card took both.
+        """
+        streaming = self._streaming_row
+        if streaming is not None and self._streaming_chat_id == self._current_chat_id:
+            try:
+                index = self._messages_layout.indexOf(streaming)
+            except RuntimeError:     # the bubble was already deleted
+                index = -1
+            if index >= 0:
+                self._messages_layout.insertWidget(index, row)
+                return
+        self._insert_before_stretch(row)
 
     def _wire_message_actions(self, row: QWidget, role: str, message_id: int | None, is_leaf: bool = False) -> None:
         """
@@ -3901,6 +4218,8 @@ class ChatWidget(QWidget):
         if self._current_chat_id is None:
             return
         db.switch_branch(self._current_chat_id, sibling_message_id)
+        # The model's copy of the conversation followed the other branch.
+        ai_main.forget_chat(self._current_chat_id)
         self.load_chat(self._current_chat_id)
 
     def _on_copy_clicked(self, btn_copy: QPushButton, label: QLabel) -> None:
@@ -4022,6 +4341,9 @@ class ChatWidget(QWidget):
         self._active_edit_row = None
 
         db.branch_message(self._current_chat_id, message_id, new_text)
+        # The model's copy of the conversation still has the old wording
+        # and everything after it; the next message rebuilds it.
+        ai_main.forget_chat(self._current_chat_id)
         self.load_chat(self._current_chat_id)
 
         # Same "did this just become/stay the chat's opening message"
@@ -4692,7 +5014,7 @@ class ChatWidget(QWidget):
             self._attachBtn.setIcon(icons.icon("plus", c, "text_muted"))
         self._sync_thinking_button()
         # The mic icon's color is baked in at set_mic_state() call time
-        # (a qtawesome pixmap, not something the stylesheet cascade can
+        # (a tinted app/icons.py icon, not something the stylesheet cascade can
         # re-tint on its own) - re-apply for the CURRENT state so it
         # doesn't stay stuck in the old theme's color.
         self.set_mic_state(self._mic_state)
@@ -4709,8 +5031,15 @@ class ChatWidget(QWidget):
 
         messages = db.get_messages(chat_id)
         leaf_id = messages[-1]["id"] if messages else None
+        # A compacted chat shows where: after the last message the stored
+        # summary covers (see ai/compaction.py and chat_context).
+        summary = db.get_chat_summary(chat_id)
+        summary_upto = summary["upto_message_id"] if summary is not None else None
         for msg in messages:
             self._append_bubble(msg["content"], msg["role"], message_id=msg["id"], is_leaf=(msg["id"] == leaf_id))
+            if msg["id"] == summary_upto:
+                self._insert_before_stretch(self._compaction_row(chat_id, tr(
+                    "Earlier messages are summarised for {name}", name=ai_main.get_assistant_name())))
 
         if db.is_ai_working(chat_id):
             self._show_typing(chat_id)
@@ -4725,6 +5054,58 @@ class ChatWidget(QWidget):
             self.show_human_handoff(chat_id, self._pending_handoff_reason)
 
         QTimer.singleShot(50, self._scroll_to_bottom)
+
+    def _compaction_row(self, chat_id: int, text: str) -> QWidget:
+        return _make_compaction_row(text, self._theme, on_view=lambda: self._show_summary(chat_id))
+
+    def show_compaction_note(self, chat_id: int, summarized: int, tokens_before: int, tokens_after: int) -> None:
+        """Called while a reply is on its way, when the conversation was
+        compacted to make room for it (MainWindow._on_conversation_compacted)."""
+        if chat_id != self._current_chat_id:
+            return
+        text = tr(
+            "Conversation compacted to stay within the model's context: {count} earlier "
+            "messages summarised (about {before} to {after} tokens)",
+            count=summarized, before=f"{tokens_before:,}", after=f"{tokens_after:,}",
+        )
+        self._insert_before_stretch(self._compaction_row(chat_id, text))
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _show_summary(self, chat_id: int) -> None:
+        """The summary the model is working from, readable and copyable."""
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        stored = db.get_chat_summary(chat_id)
+        c = theme.colors(self._theme)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("Conversation summary"))
+        dialog.resize(620, 480)
+        dialog.setStyleSheet(
+            f"QDialog {{ background-color: {c['bg_elevated']}; }}"
+            f"QLabel {{ color: {c['text_secondary']}; font-family: \"Segoe UI\"; font-size: 12px; background: transparent; }}"
+            f"QPlainTextEdit {{ background-color: {c['bg_input']}; color: {c['text_primary']}; "
+            f"border: 1px solid {c['border']}; border-radius: 8px; padding: 8px; "
+            "font-family: \"Segoe UI\"; font-size: 12.5px; }"
+            f"QPushButton {{ background-color: {c['bg_input']}; color: {c['text_primary']}; "
+            f"border: 1px solid {c['border']}; border-radius: 7px; padding: 6px 16px; }}"
+            f"QPushButton:hover {{ border-color: {c['accent']}; }}"
+            "QDialogButtonBox { background: transparent; }"
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(10)
+        intro = QLabel(tr("What {name} has of the earlier part of this conversation. The messages "
+                          "after it are sent as they are.", name=ai_main.get_assistant_name()))
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(stored["summary"] if stored is not None else tr("No summary is stored for this chat."))
+        layout.addWidget(text, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def start_new_chat(self, chat_id: int):
         """Prepares the UI for a new, empty chat."""

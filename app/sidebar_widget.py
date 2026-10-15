@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QMenu, QInputDialog, QMessageBox,
     QSizePolicy, QSpacerItem, QScrollArea,
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QSize
+from PyQt6.QtGui import QAction
 import app.chat_database as db
 import ai.main as ai_main
 import app.theme as theme
@@ -100,12 +100,15 @@ QInputDialog {{
     background-color: {c['bg_panel']};
     color: {c['text_primary']};
     font-family: "Segoe UI";
+    border: none;
 }}
 QLabel {{
     color: {c['text_secondary']};
     font-family: "Segoe UI";
     font-size: 12px;
+    background: transparent;
 }}
+QDialogButtonBox {{ background: transparent; }}
 QLineEdit {{
     background-color: {c['bg_elevated']};
     border: 1px solid {c['bg_hover_strong']};
@@ -138,8 +141,10 @@ QMessageBox {{
     background-color: {c['bg_panel']};
     color: {c['text_primary']};
     font-family: "Segoe UI";
+    border: none;
 }}
-QLabel {{ color: {c['text_secondary']}; font-family: "Segoe UI"; font-size: 12px; }}
+QLabel {{ color: {c['text_secondary']}; font-family: "Segoe UI"; font-size: 12px; background: transparent; }}
+QDialogButtonBox {{ background: transparent; }}
 QPushButton {{
     background-color: {c['bg_elevated']};
     color: {c['text_muted']};
@@ -430,33 +435,33 @@ class ChatItemWidget(QWidget):
 
     def _show_context_menu(self, pos: QPoint | None = None):
         menu = QMenu(self)
-        # Deliberately NOT custom-styled - uses the native OS context menu
-        # look, consistent with a real Windows right-click menu elsewhere.
+        # In the app's palette, like the tray menu: the icons are tinted
+        # from the theme, so the menu behind them has to be too.
+        c = theme.colors(self._theme)
+        menu.setStyleSheet(theme.menu_style(c))
 
         # ── Rename ──
         action_rename = QAction(tr("Rename"), self)
-        action_rename.setIcon(QIcon(fr"{root_path}/assets/pen-solid-full.svg"))
-        # action_rename.setIconSize(QSize(10, 10))
+        action_rename.setIcon(icons.icon("edit", c, "text_secondary"))
         action_rename.triggered.connect(self._on_rename)
         menu.addAction(action_rename)
 
         # ── Pin / Unpin ──
+        # A filled pin for "this chat is pinned", an outline one for "pin
+        # it", matching what the item does rather than a star, which
+        # reads as "favourite".
         if self._pinned:
-            pin_label = "Unpin"
-            action_pin = QAction(pin_label, self)
-            action_pin.setIcon(QIcon(fr"{root_path}/assets/star-solid-full.svg"))
-            # action_pin.setIconSize(QSize(10, 10))
+            action_pin = QAction(tr("Unpin"), self)
+            action_pin.setIcon(icons.icon("pin-filled", c, "accent"))
         else:
-            pin_label = "Pin"
-            action_pin = QAction(pin_label, self)
-            action_pin.setIcon(QIcon(fr"{root_path}/assets/star-regular-full.svg"))
-            # action_pin.setIconSize(QSize(10, 10))
+            action_pin = QAction(tr("Pin"), self)
+            action_pin.setIcon(icons.icon("pin", c, "text_secondary"))
         action_pin.triggered.connect(self._on_pin_toggle)
         menu.addAction(action_pin)
 
         # ── Export ──
         action_export = QAction(tr("Export\u2026"), self)
-        action_export.setIcon(QIcon(fr"{root_path}/assets/share-from-square-solid-full.svg"))
+        action_export.setIcon(icons.icon("share", c, "text_secondary"))
         action_export.triggered.connect(lambda: self.export_request.emit(self._chat_id))
         menu.addAction(action_export)
 
@@ -464,8 +469,7 @@ class ChatItemWidget(QWidget):
 
         # ── Delete ──
         action_delete = QAction(tr("Delete"), self)
-        action_delete.setIcon(QIcon(fr"{root_path}/assets/trash-solid-full.svg"))
-        # action_delete.setIconSize(QSize(10, 10))
+        action_delete.setIcon(icons.icon("trash", c, "danger"))
         action_delete.setProperty("danger", True)
         action_delete.triggered.connect(self._on_delete)
         menu.addAction(action_delete)
@@ -527,6 +531,7 @@ class Sidebar(QWidget):
 
         self._theme: str = ai_main.get_theme()
         self.setStyleSheet(_build_sidebar_style(theme.colors(self._theme)))
+        self._apply_nav_icons()
 
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
@@ -588,10 +593,31 @@ class Sidebar(QWidget):
         root_layout.insertWidget(index, scroll)
         self._history_scroll = scroll  # kept for refresh_history()'s scroll-position preservation
 
+    # Page buttons and their icons. Set here rather than in the .ui so
+    # they are tinted from the theme; the .ui used to point at SVG files
+    # with a fixed light-grey fill, which vanished in the light theme.
+    _NAV_ICONS = (
+        ("btnNewChat", "new-chat"),
+        ("btnActions", "bolt"),
+        ("btnRecorder", "record"),
+        ("btnMapping", "tree"),
+        ("btnSettings", "settings"),
+    )
+
+    def _apply_nav_icons(self) -> None:
+        c = theme.colors(self._theme)
+        for attr, name in self._NAV_ICONS:
+            button = getattr(self, attr, None)
+            if button is None:
+                continue
+            button.setIcon(icons.icon(name, c, "text_muted", checked_color_key="text_primary"))
+            button.setIconSize(QSize(16, 16))
+
     def set_theme(self, theme_name: str) -> None:
         """Re-skins the sidebar chrome and rebuilds every chat-list row in the new theme (simplest correct way to re-theme already-existing ChatItemWidgets - see refresh_history)."""
         self._theme = theme_name
         self.setStyleSheet(_build_sidebar_style(theme.colors(theme_name)))
+        self._apply_nav_icons()
         active = self._get_active_chat_id()
         self.refresh_history(active_chat_id=active)
 
@@ -690,6 +716,7 @@ class Sidebar(QWidget):
 
     def _on_delete(self, chat_id: int):
         db.delete_chat(chat_id)
+        ai_main.forget_chat(chat_id)
         self.chat_deleted.emit()
         # Reload to recompute the sections
         self.refresh_history()

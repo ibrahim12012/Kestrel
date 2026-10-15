@@ -29,13 +29,20 @@ class AutonomousWorker(QObject):
 
     @pyqtSlot(int, str)
     def run(self, chat_id: int, goal: str) -> None:
+        from ai import automation_lock
+
         try:
-            outcome = run_autonomous_mode(
-                goal,
-                get_max_automation_steps(),
-                on_human_handoff=lambda reason: self.human_handoff_needed.emit(chat_id, reason),
-                on_network_retry=lambda attempt, wait_seconds: self.network_retry.emit(chat_id, attempt, wait_seconds),
-            )
+            # One automation at a time: not while a macro or a mapping run
+            # is clicking (ai/automation_lock.py). Refused before the run
+            # starts, which also keeps it from clearing a stop meant for
+            # the other one.
+            with automation_lock.hold("an AI run"):
+                outcome = run_autonomous_mode(
+                    goal,
+                    get_max_automation_steps(),
+                    on_human_handoff=lambda reason: self.human_handoff_needed.emit(chat_id, reason),
+                    on_network_retry=lambda attempt, wait_seconds: self.network_retry.emit(chat_id, attempt, wait_seconds),
+                )
             # The run's own account of what happened, rather than the UI
             # assuming success. A dict, not a bare string, so a richer
             # report can be added without changing the signal again.

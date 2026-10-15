@@ -8,6 +8,13 @@ ai/discovery/compiler.py
 ==========================
 Atomic Macro Compilation Pipeline - spec section 4.
 
+Not used by the app any more. A mapping run used to compile and register
+one AI tool per control, which made the AI's tool list hundreds long
+and gave it functions that clicked where a control had been when the
+map was made. ai/actions.py's tool_use_mapped_control presses a mapped
+control by name instead, looked up in the window as it is now. This
+stays for anyone who wants the generated module itself.
+
 Rather than one monolithic macro per multi-step task, every distinct
 action discovered by the mapper (ai/discovery/mapper.py) becomes its
 own independent, parameterized Python function - "Atomic Function
@@ -167,8 +174,6 @@ def compile_action_tree(tree: ActionTree, out_dir: "str | None" = None) -> str:
     "write the artifact" and "make it live in this running process" can
     be tested/reasoned about independently).
     """
-    from ai.actions import _sanitize_macro_name
-
     source = render_module(tree)
     try:
         ast.parse(source)
@@ -177,12 +182,19 @@ def compile_action_tree(tree: ActionTree, out_dir: "str | None" = None) -> str:
 
     out_dir = out_dir or GENERATED_DIR
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"{_sanitize_macro_name(tree.app_name)}_actions.py")
+    path = compiled_path(tree.app_name, out_dir)
     with open(path, "w", encoding="utf-8") as f:
         f.write(source)
 
     print(f"[discovery.compiler] Compiled {len(tree.nodes)} node(s) / {tree.action_count()} action(s) -> {path}")
     return path
+
+
+def compiled_path(app_name: str, out_dir: "str | None" = None) -> str:
+    """Where the code compiled from an app's map is written: named like
+    its map (ai/discovery/tree.py's file_stem)."""
+    from ai.discovery.tree import file_stem
+    return os.path.join(out_dir or GENERATED_DIR, f"{file_stem(app_name)}_actions.py")
 
 
 def register_compiled_actions(actions_module, tree: ActionTree) -> int:

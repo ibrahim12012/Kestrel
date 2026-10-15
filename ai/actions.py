@@ -20,20 +20,18 @@ Also contains:
 import keyboard
 import inspect
 import time
-import pyautogui
+# Imported on first use, not at startup: see ai/lazy_import.py. The
+# fail-safe kill switch (pyautogui.FAILSAFE = True) that used to be set
+# here is applied there, the moment the real module loads, so it is on
+# before any pyautogui call can run. Slamming the mouse into ANY screen
+# corner raises pyautogui.FailSafeException from inside whatever
+# pyautogui call is running at that instant; run_autonomous_mode() in
+# ai/main.py is what turns that into a full stop.
+from ai.lazy_import import pyautogui
 # NOTE: deliberately no `from typing import Literal` here any more - a
 # Literal[...] annotation on a tool_* function breaks Gemini's automatic
 # function calling at call time. See the comment under
 # tool_generate_file for the full story.
-
-# Fail-safe kill switch: PyAutoGUI already defaults to this, but it's set
-# explicitly here since the whole point of it is safety-critical - never
-# want it silently off because some code elsewhere touched the default.
-# Slamming the mouse into ANY screen corner (top-right included) raises
-# pyautogui.FailSafeException from inside whatever pyautogui call is
-# running at that instant. run_autonomous_mode() in ai/main.py is what
-# actually turns that into a full stop instead of just a caught error.
-pyautogui.FAILSAFE = True
 
 # Emergency stop, set the moment a fail-safe triggers anywhere (mouse
 # slammed into a screen corner mid-action). This has to be a flag, not
@@ -148,8 +146,62 @@ import os
 import re
 import keyword
 import unicodedata
+from dataclasses import dataclass
 from urllib.parse import urlparse
-from AppOpener import open as appopen
+
+from ai.lazy_import import hidden_console_windows
+# Clicks, keys and typing without the user's mouse; see that module.
+from ai import direct_input
+
+# Kestrel.exe has no console, so every console program it starts (tasklist,
+# taskkill, cmd.exe) gets a console window of its own and flashes it on
+# screen unless it is told not to. 0 outside Windows, where it is ignored.
+_NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+
+# ── AppOpener, loaded on first use ────────────────────────────────
+# This was `from AppOpener import open as appopen`, which made AppOpener
+# the most expensive import in the app. Importing it runs cmd.exe every
+# time (AppOpener/features.py does `subprocess.call("", shell=True)` to
+# switch on terminal colours), and the first import in an install also
+# runs PowerShell's Get-StartApps to build its list of apps. All of that
+# happened before Kestrel's window existed, and because Kestrel.exe has
+# no console, each of those programs flashed a console window of its own.
+#
+# Now the import waits until an app is actually opened, or until the
+# background warm-up main.py starts once the window is up, and both the
+# import and every call run with console windows hidden.
+_appopen_function = None
+_appopen_lock = threading.Lock()
+
+
+def _load_appopener():
+    global _appopen_function
+    with _appopen_lock:
+        if _appopen_function is None:
+            with hidden_console_windows():
+                from AppOpener import open as appopener_open
+            _appopen_function = appopener_open
+    return _appopen_function
+
+
+def appopen(*args, **kwargs):
+    """AppOpener's open(), imported on first use. See the note above."""
+    function = _load_appopener()
+    with hidden_console_windows():
+        return function(*args, **kwargs)
+
+
+def prewarm_appopener() -> None:
+    """
+    Import AppOpener ahead of the first "open <app>" request. Meant for
+    a background thread once the window is showing. Never raises: a
+    failure here just means the first request pays for the import.
+    """
+    try:
+        _load_appopener()
+    except Exception as e:
+        log_debug(f"[actions] AppOpener prewarm skipped: {e}")
 
 import ai.safety as safety
 from ai.safety import RiskLevel
@@ -586,6 +638,7 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
     if not results:
         return f"No results found for: {query}"
 
+    _queue_sources([{"url": r.get("url"), "title": r.get("title")} for r in results], "found")
     return "\n".join(
         f"{i}. {r['title']} - {r['snippet']} ({r['url']})"
         for i, r in enumerate(results, start=1)
@@ -617,6 +670,14 @@ def tool_read_url(url: str, include_images: bool = True) -> str:
     Returns the page title, its text with image markers in place, and a
     list of the images attached. A page that could not be read comes
     back as a sentence saying why, not an exception.
+
+    A page that builds itself with JavaScript is read in an off-screen
+    browser automatically; there is no need to open one on screen.
+
+    A site that answers with a CAPTCHA or a bot check ("verify you are
+    human") is not read, and you are told so. Don't try to get around
+    it: no other tool, no retrying, no browser automation to solve it.
+    Tell the user; they can open the page in their own browser.
     """
     from ai import web_reader
 
@@ -631,11 +692,22 @@ def tool_read_url(url: str, include_images: bool = True) -> str:
         return page.error
     if not page.text.strip():
         return f"{url} loaded, but there was no readable text on it."
+    _queue_sources([{"url": page.url, "title": page.title}], "read")
 
     sections = [f"# {page.title}" if page.title else "", f"Source: {page.url}", "", page.text]
     if include_images and page.images:
         sections.append(_attach_page_images(page, url))
     return "\n".join(part for part in sections if part).strip()
+
+
+def _queue_sources(entries: list, kind: str) -> None:
+    """For the chat's Sources card (ai.main.queue_sources). Imported late:
+    ai.main imports this module."""
+    try:
+        import ai.main as ai_main
+        ai_main.queue_sources(entries, kind)
+    except Exception as e:
+        log_debug(f"[actions] couldn't record sources: {e}")
 
 
 def tool_crawl_site(url: str, max_pages: int = 10, include_images: bool = False) -> str:
@@ -645,7 +717,14 @@ def tool_crawl_site(url: str, max_pages: int = 10, include_images: bool = False)
 
     Finds the pages the way the site itself says to: robots.txt, then
     its sitemap, then the links on the starting page if it has neither.
-    A site whose robots.txt asks not to be crawled is not crawled.
+    A site whose robots.txt asks not to be crawled is not crawled, and
+    its Crawl-delay is respected. Pages that build themselves with
+    JavaScript are read in an off-screen browser, as with tool_read_url.
+    The crawl stops at the first CAPTCHA or bot check; as with
+    tool_read_url, don't try to get around one, tell the user.
+
+    This is how to read a site: never through a macro or autonomous
+    mode, which drive the user's own browser on screen.
 
     WHEN TO USE THIS:
     A question about a whole site rather than one page. "What does this
@@ -682,9 +761,13 @@ def tool_crawl_site(url: str, max_pages: int = 10, include_images: bool = False)
         return f"Crawling {url} failed: {e}"
 
     readable = [p for p in pages if not p.error and p.text.strip()]
-    failed = [p for p in pages if p.error]
+    stopped_at = next((p for p in pages if p.blocked), None)
+    failed = [p for p in pages if p.error and not p.blocked]
+    _queue_sources([{"url": p.url, "title": p.title} for p in readable], "read")
 
     if not readable:
+        if stopped_at is not None:
+            return stopped_at.error
         detail = "; ".join(f"{p.url}: {p.error}" for p in failed[:3])
         return f"Nothing readable was found at {url}. {detail}".strip()
 
@@ -704,6 +787,8 @@ def tool_crawl_site(url: str, max_pages: int = 10, include_images: bool = False)
     if failed:
         chunks.append(f"{len(failed)} page(s) couldn't be read:")
         chunks.extend(f"  - {p.url}: {p.error}" for p in failed[:10])
+    if stopped_at is not None:
+        chunks.append(f"The crawl stopped there. {stopped_at.error}")
 
     return "\n".join(chunks).strip()
 
@@ -1139,30 +1224,46 @@ def _run_block_nodes(nodes: list, action_delay: float) -> None:
                 raise MacroStopped("Macro stopped by a “stop this macro” block.")
 
             # ── Plain actions ────────────────────────────────────────
-            if step_type == "click":
+            if step_type in ("click", "right_click"):
                 x, y = int(step.get("x", 0)), int(step.get("y", 0))
-                pyautogui.moveTo(x, y, duration=0.2)
-                pyautogui.click()
-                print(f"[play] click ({x}, {y})")
-            elif step_type == "right_click":
-                x, y = int(step.get("x", 0)), int(step.get("y", 0))
-                pyautogui.moveTo(x, y, duration=0.2)
-                pyautogui.click(button="right")
-                print(f"[play] right click ({x}, {y})")
+                if not _play_click(x, y, "right" if step_type == "right_click" else "left"):
+                    if emergency_stop:
+                        return
+                    raise MacroStopped(f"Couldn't click ({x}, {y}), so the steps after it were not played.")
             elif step_type == "write":
                 value = step.get("value", "")
-                _type_text(value)
+                typed = _type_text(value)
+                if not typed:
+                    if emergency_stop:
+                        return
+                    raise MacroStopped(f"Couldn't type {_preview(value)} ({typed.note}), "
+                                       f"so the steps after it were not played.")
                 print(f"[play] write: {value!r}")
             elif step_type == "enter":
-                keyboard.press_and_release("enter")
+                pressed = _press_key("enter")
+                if not pressed:
+                    if emergency_stop:
+                        return
+                    raise MacroStopped(f"Couldn't press Enter ({pressed.note}), "
+                                       f"so the steps after it were not played.")
                 print("[play] enter")
             elif step_type == "hotkey":
                 combo = str(step.get("keys", "")).strip()
                 if combo:
-                    keyboard.press_and_release(combo)
+                    pressed = _press_hotkey(combo)
+                    if not pressed:
+                        if emergency_stop:
+                            return
+                        raise MacroStopped(f"Couldn't press {combo} ({pressed.note}), "
+                                           f"so the steps after it were not played.")
                     print(f"[play] hotkey {combo}")
             elif step_type == "new_tab":
-                pyautogui.hotkey("ctrl", "t")
+                pressed = _new_tab()
+                if not pressed:
+                    if emergency_stop:
+                        return
+                    raise MacroStopped(f"Couldn't open a new tab ({pressed.note}), "
+                                       f"so the steps after it were not played.")
                 print("[play] new tab")
             elif step_type == "open_app":
                 tool_open_application(step.get("app", ""))
@@ -1199,7 +1300,25 @@ def _type_char_fallback(ch: str) -> None:
         pyautogui.write(ch)
 
 
-def _type_text(text: str) -> None:
+class Typed:
+    """
+    What became of some typing or a key: true when it all went through.
+    When not, `note` says why (automation stopped, the window it was
+    going into left the front, it couldn't be brought forward...), and
+    `started` whether some of it had already gone in before that.
+    """
+
+    def __init__(self, done: bool, note: str = "", started: bool = False):
+        self.done, self.note, self.started = done, note, started
+
+    def __bool__(self) -> bool:
+        return self.done
+
+    def __repr__(self) -> str:
+        return f"Typed(done={self.done}, note={self.note!r}, started={self.started})"
+
+
+def _type_text(text: str) -> Typed:
     """
     Type text into whatever has focus.
 
@@ -1232,14 +1351,268 @@ def _type_text(text: str) -> None:
     removes only a trailing selection like that; with nothing selected
     (cursor already at the end of the text, the normal case everywhere
     else) it's a no-op, so this is safe to always do, not just for URLs.
+
+    Into the window the AI is working in, which needn't be in front: see
+    ai/direct_input.py. The keyboard is used when that window is in front,
+    or once it has been brought there; if it can't be, nothing is typed.
+    Before every key, that window is checked to still be in front: when
+    the user clicks into another one halfway through, typing stops
+    there, so the rest doesn't land in their window.
+
+    A line break or a tab in the text is pressed as the Enter or Tab key
+    it stands for, the way pyautogui typed them, so a "\n" still submits
+    a field and a "\t" still moves to the next one. Text that ends with
+    one gets no Delete after it: that Enter may have closed a dialog, and
+    the Delete would land on whatever is behind it.
+
+    Returns a Typed, true when all of it went in. When it is false, the
+    caller doesn't press Enter after it, and a macro stops.
     """
     from ai import unicode_input
 
-    for ch in text:
-        if not unicode_input.send_char(ch):
-            _type_char_fallback(ch)
+    if not text:
+        return Typed(True)
+    outcome = direct_input.type_text(text)
+    if not outcome.done and outcome.how != "keyboard":
+        return _not_typed(outcome)
+    if outcome.done:
+        # It went in without the keyboard; so does the Delete, if it can.
+        time.sleep(0.05)  # let an async autocomplete suggestion actually land first
+        cleared = _press_key("delete", outcome.window)
+        if not cleared and direct_input.is_stopped():
+            return Typed(False, cleared.note, started=True)
+        return Typed(True)
+    # The windows there as typing starts: a window the keys may be handed
+    # over to has to be a new one (see direct_input.handed_over).
+    front, shown, last_key_at = outcome.front, direct_input.shown_windows(), None
+    for kind, piece in _typing_pieces(text):
+        for item in ((piece,) if kind == "key" else piece):
+            going, front = _keys_reach(front, shown, last_key_at)
+            if not going:
+                return _typing_interrupted(last_key_at is not None)
+            if kind == "key":
+                keyboard.press_and_release(item)
+            elif not unicode_input.send_char(item):
+                _type_char_fallback(item)
+            last_key_at = time.monotonic()
+    if text[-1] in "\r\n\t":
+        return Typed(True)
     time.sleep(0.05)  # let an async autocomplete suggestion actually land first
-    pyautogui.press("delete")
+    # Only into a text field: anywhere else (a file list, a mail list) a
+    # Delete acts on what is selected.
+    if not direct_input.focus_takes_text():
+        return Typed(True)
+    going, front = _keys_reach(front, shown, last_key_at)
+    if not going:
+        return _typing_interrupted(True)
+    keyboard.press_and_release("delete")
+    return Typed(True)
+
+
+def _keys_reach(front, shown, last_key_at):
+    """Whether the next key may go, and the window it goes into: `front`
+    while it is still the window in front, or the one it handed over to
+    (the Start menu turning into Search: see direct_input.handed_over)."""
+    if direct_input.keyboard_reaches(front):
+        return True, front
+    new = direct_input.handed_over(front, shown, last_key_at)
+    return new is not None, new
+
+
+def _not_typed(outcome) -> Typed:
+    note = outcome.note or "automation is stopped"
+    print(f"[type] Nothing typed: {note}.")
+    return Typed(False, note)
+
+
+def _typing_interrupted(started: bool) -> Typed:
+    if direct_input.is_stopped():
+        note = "automation was stopped"
+    else:
+        now = direct_input.describe_front()
+        note = ("the window it was typing into is no longer the one in front (the user may have "
+                "clicked into another window, or a dialog came up)"
+                + (f"; in front now: {now}" if now else ""))
+    print(f"[type] Stopped typing{' partway' if started else ''}: {note}.")
+    return Typed(False, note, started)
+
+
+def _typing_pieces(text: str):
+    """`text` as runs of characters, and the keys its line breaks ("\r\n",
+    "\n", "\r") and tabs stand for."""
+    run = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in "\r\n\t":
+            if run:
+                yield "text", "".join(run)
+                run = []
+            if ch == "\r" and text[i + 1:i + 2] == "\n":
+                i += 1
+            yield "key", "tab" if ch == "\t" else "enter"
+        else:
+            run.append(ch)
+        i += 1
+    if run:
+        yield "text", "".join(run)
+
+
+def _press_key(key: str, window=None) -> Typed:
+    """
+    One key: Enter, Delete, Escape, Tab, an arrow. Posted straight to the
+    window the AI is working in when that window is in the background and
+    can take it that way (ai/direct_input.py); otherwise the keyboard,
+    which then reaches that window. Not done when it wasn't pressed at
+    all: automation stopped, or the window couldn't be brought forward.
+    `window`: that window, when the caller already knows it.
+
+    press_and_release, never press: tool_enter and tool_write_and_enter
+    used keyboard.press("enter"), which holds the key down and never lets
+    it go.
+    """
+    outcome = direct_input.press_key(key, window)
+    if outcome.done:
+        return Typed(True)
+    if outcome.how != "keyboard":
+        note = outcome.note or "automation is stopped"
+        print(f"[keys] {key} not pressed: {note}.")
+        return Typed(False, note)
+    name = key.strip().lower()
+    if name not in _KEYS_THAT_OPEN:
+        keyboard.press_and_release(key)
+        return Typed(True)
+    # Enter in a text field (a search box, a document) rarely opens a
+    # window; on a file or a button it may (see direct_input.follow_keys).
+    into_text = name in ("enter", "return") and direct_input.focus_takes_text()
+    before = direct_input.before_keys(outcome.front, into_text=into_text)
+    keyboard.press_and_release(key)
+    direct_input.follow_keys(before)
+    return Typed(True)
+
+
+# Single keys that may bring up a window: Enter opening a file or
+# pressing a button, F1's help. The window they bring up is where the next
+# keys go (direct_input.follow_keys).
+_KEYS_THAT_OPEN = frozenset({"enter", "return", "f1"})
+
+
+# Names the keyboard module gives the Windows key. A combination with it
+# is for Windows itself (Win+R, Win+D), whichever window is in front.
+_WINDOWS_KEY_NAMES = frozenset({"win", "windows", "left windows", "right windows", "super", "cmd", "command"})
+
+
+def _press_hotkey(combo: str) -> Typed:
+    """
+    A key combination such as ctrl+t. Ctrl, Alt and Shift have to be
+    really held down for an app to see them, so this always goes through
+    the keyboard, with the AI's window brought to the front first when it
+    isn't already there. Not pressed at all when automation is stopped or
+    that window can't be brought forward: it would go to another window.
+    A combination with the Windows key is for Windows itself, and only
+    waits for the stop.
+    """
+    parts = {part.strip().lower() for part in combo.split("+")}
+    # Alt+Tab and Alt+Esc switch to a window that was on screen, on purpose.
+    switch = "alt" in parts and bool(parts & {"tab", "esc", "escape"})
+    if parts & _WINDOWS_KEY_NAMES or switch:
+        # For Windows itself, whichever window is in front.
+        if direct_input.is_stopped():
+            return Typed(False, "automation is stopped")
+        before = direct_input.before_keys()
+        keyboard.press_and_release(combo)
+        direct_input.follow_keys(before, system=not switch, switch=switch)
+        return Typed(True)
+    outcome = direct_input.keyboard_window()
+    if outcome.how != "keyboard":
+        note = outcome.note or "automation is stopped"
+        print(f"[keys] {combo} not pressed: {note}.")
+        return Typed(False, note)
+    if "+".join(sorted(parts)) in _STAYS_IN_WINDOW:
+        keyboard.press_and_release(combo)
+        return Typed(True)
+    # A window it brings up (a new window from Ctrl+N, Properties from
+    # Alt+Enter) is where the next keys go.
+    before = direct_input.before_keys(outcome.front)
+    keyboard.press_and_release(combo)
+    direct_input.follow_keys(before)
+    return Typed(True)
+
+
+# Combinations that act inside the window they go to and bring up no new
+# one (a dialog they open belongs to that window): nothing is waited for
+# after them. Parts sorted, as _press_hotkey compares them.
+_STAYS_IN_WINDOW = frozenset("+".join(sorted(combo.split("+"))) for combo in (
+    "ctrl+c", "ctrl+x", "ctrl+v", "ctrl+a", "ctrl+z", "ctrl+y", "ctrl+shift+z",
+    "ctrl+b", "ctrl+i", "ctrl+u", "ctrl+s", "ctrl+f", "ctrl+h", "ctrl+l", "ctrl+t", "ctrl+w",
+    "ctrl+tab", "ctrl+shift+tab", "shift+tab", "ctrl+home", "ctrl+end",
+    "ctrl+backspace", "ctrl+delete", "ctrl+left", "ctrl+right", "shift+left", "shift+right",
+    "shift+up", "shift+down", "shift+home", "shift+end", "ctrl+shift+left", "ctrl+shift+right",
+    "ctrl+plus", "ctrl+minus", "ctrl+0", "ctrl+r", "f5",
+))
+
+
+def _new_tab() -> Typed:
+    """Ctrl+T for a new browser tab, into the window the AI is working in,
+    the way _press_hotkey sends a combination."""
+    outcome = direct_input.keyboard_window()
+    if outcome.how != "keyboard":
+        note = outcome.note or "automation is stopped"
+        print(f"[keys] Ctrl+T not pressed: {note}.")
+        return Typed(False, note)
+    pyautogui.hotkey("ctrl", "t")
+    return Typed(True)
+
+
+def _macro_type(text: str) -> None:
+    """A generalized macro's typing (ai/macro_generalizer.py): stops the
+    macro when it couldn't all go in, since every step after it expects
+    it there."""
+    typed = _type_text(text)
+    if not typed:
+        raise MacroStopped(f"couldn't type {_preview(text)}: {typed.note}")
+
+
+def _macro_key(key: str) -> None:
+    pressed = _press_key(key)
+    if not pressed:
+        raise MacroStopped(f"couldn't press {key}: {pressed.note}")
+
+
+def _macro_hotkey(combo: str) -> None:
+    pressed = _press_hotkey(combo)
+    if not pressed:
+        raise MacroStopped(f"couldn't press {combo}: {pressed.note}")
+
+
+def _preview(text: str) -> str:
+    return repr(text if len(text) <= 60 else text[:57] + "...")
+
+
+def _start_macro() -> None:
+    """
+    The first step of every macro run, generalized ones included: typing
+    goes to the window the macro's own clicks pick, never to one an
+    earlier run left behind (see ai/direct_input.py's target).
+    """
+    direct_input.forget_target()
+
+
+def _play_click(x: int, y: int, button: str = "left") -> bool:
+    """
+    A macro's click, without the user's mouse when there is any other way
+    (ai/direct_input.py). False when it couldn't be made at all, and the
+    caller stops the macro there: every step after it was recorded for
+    the screen that click led to.
+    """
+    outcome = direct_input.click(x, y, button=button)
+    what = "right click" if button == "right" else "click"
+    if outcome.done:
+        print(f"[play] {what} ({x}, {y})")
+        return True
+    if not outcome.stopped:
+        print(f"[play] Couldn't {what} ({x}, {y}): {outcome.note}.")
+    return False
 
 
 def click_at_target_or_position(target: str, x: int, y: int, button: str = "left") -> str:
@@ -1249,6 +1622,10 @@ def click_at_target_or_position(target: str, x: int, y: int, button: str = "left
     the macro was made - in case the layout changed since then, or the
     vision call fails for any reason. button="right" opens a context menu.
     Used by macros generalized via ai/macro_generalizer.py.
+
+    A click that can't be made at all raises MacroStopped, which the
+    generated macro turns into its result: the steps after it were made
+    for the screen that click leads to.
     """
     refusal = _check_emergency_stop()
     if refusal:
@@ -1258,15 +1635,27 @@ def click_at_target_or_position(target: str, x: int, y: int, button: str = "left
         result = ai_main.get_position_object_and_click(target, button=button)
         if isinstance(result, str) and result.lower().startswith("could not locate"):
             raise RuntimeError(result)
-        return result
+        if isinstance(result, str) and "kestrel's own window is there" in result.lower():
+            # Kestrel's window covers the target, so the screenshot can't
+            # show it: the recorded position is clicked, through Kestrel's
+            # window, as a recorded macro's click is (ai/direct_input.py).
+            raise RuntimeError(result)
     except Exception as e:
         handled = _handle_pyautogui_exception(e)
         if handled:
             return handled
         print(f"[macro] Vision click for {target!r} failed ({e}) - falling back to ({x}, {y})")
-        pyautogui.moveTo(x, y, duration=0.2)
-        pyautogui.click(button=button)
-        return f"Clicked fallback position ({x}, {y})"
+    else:
+        if isinstance(result, str) and result.lower().startswith("could not click"):
+            # Found, but it couldn't be clicked (see ai/direct_input.py).
+            raise MacroStopped(result)
+        return result
+    outcome = direct_input.click(x, y, button=button)
+    if outcome.stopped:
+        return _check_emergency_stop() or "Stopped."
+    if not outcome.done:
+        raise MacroStopped(f"couldn't click {target or 'the recorded position'} at ({x}, {y}): {outcome.note}")
+    return f"Clicked fallback position ({x}, {y})"
 
 
 def play_actions(recorded_actions: list) -> None:
@@ -1305,6 +1694,8 @@ def play_actions(recorded_actions: list) -> None:
     # enough; ai.main.get_macro_action_delay() is the source of truth for
     # the Settings UI, this just mirrors its default/clamp/env-key logic.
     action_delay = _get_action_delay()
+    started = time.monotonic()
+    _start_macro()
 
     print(f"Playing Actions... (delay between steps: {action_delay}s)")
 
@@ -1316,12 +1707,13 @@ def play_actions(recorded_actions: list) -> None:
         program = blocks.parse_program(
             [a if isinstance(a, dict) else _legacy_action_to_step(a) for a in recorded_actions]
         )
+        stopped = False
         try:
             _run_block_nodes(program, action_delay)
         except MacroStopped as e:
+            stopped = True
             print(f"[play] {e}")
-        import ai.main as ai_main
-        ai_main.play_notification_sound("macro_finished")
+        _announce_macro_end(stopped or emergency_stop, started)
         return
 
     for action in recorded_actions:
@@ -1329,29 +1721,38 @@ def play_actions(recorded_actions: list) -> None:
             print("[play] EMERGENCY STOP ACTIVE - aborting macro replay.")
             break
         try:
-            if len(action) == 3 and action[0] == "click":
-                _, x, y = action
-                pyautogui.moveTo(x, y, duration=0.2)
-                pyautogui.click()
-                print(f"[play] click ({x}, {y})")
-
-            elif len(action) == 3 and action[0] == "right_click":
-                _, x, y = action
-                pyautogui.moveTo(x, y, duration=0.2)
-                pyautogui.click(button="right")
-                print(f"[play] right click ({x}, {y})")
+            if len(action) == 3 and action[0] in ("click", "right_click"):
+                kind, x, y = action
+                if not _play_click(x, y, "right" if kind == "right_click" else "left"):
+                    if not emergency_stop:
+                        print("[play] Stopping the macro here: the steps after that click were "
+                              "recorded for the screen it leads to.")
+                    break
 
             elif len(action) == 2 and action[1] == "write":
                 text, _ = action
-                _type_text(text)
+                typed = _type_text(text)
+                if not typed:
+                    if not emergency_stop:
+                        print(f"[play] Stopping the macro here: couldn't type {_preview(text)} "
+                              f"({typed.note}).")
+                    break
                 print(f"[play] write: {text!r}")
 
             elif len(action) == 2 and action[0] == "enter":
-                keyboard.press_and_release("enter")
+                pressed = _press_key("enter")
+                if not pressed:
+                    if not emergency_stop:
+                        print(f"[play] Stopping the macro here: couldn't press Enter ({pressed.note}).")
+                    break
                 print("[play] enter")
 
             elif len(action) == 2 and action[0] == "new_page":
-                pyautogui.hotkey('ctrl', 't')
+                pressed = _new_tab()
+                if not pressed:
+                    if not emergency_stop:
+                        print(f"[play] Stopping the macro here: couldn't open a new tab ({pressed.note}).")
+                    break
                 print("[play] new tab")
 
             elif len(action) == 2 and action[1] == "open":
@@ -1366,12 +1767,32 @@ def play_actions(recorded_actions: list) -> None:
                 break
             print(f"[play] Error on action {action}: {e}")
 
+    _announce_macro_end(emergency_stop, started)
+
+
+def _announce_macro_end(stopped: bool, started: float) -> None:
+    """
+    One sound for how a macro run ended, or none.
+
+    None inside an autonomous run: the run announces its own outcome
+    once, at its end, and a macro it plays is one of its steps. None
+    either when the stop shortcut ended it, because the shortcut already
+    played the stop sound when it was pressed. It used to play "finished"
+    even then, straight after the stop sound: two sounds, one of them
+    wrong.
+    """
     # Local import: ai.main imports this module at module load time, so
     # importing it back at module level here would be circular (same
     # reason click_at_target_or_position/tool_screenshot import it locally
     # instead of at the top of the file).
     import ai.main as ai_main
-    ai_main.play_notification_sound("macro_finished")
+    if ai_main.autonomous_run_active():
+        return
+    if not stopped:
+        ai_main.play_notification_sound("macro_finished")
+    elif ai_main._stop_sound_played_at < started:
+        # Stopped some other way (the mouse-corner fail-safe).
+        ai_main.play_notification_sound("automation_stopped")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1388,7 +1809,7 @@ def _get_running_processes() -> list:
         # surface at all.
         out = subprocess.check_output(
             ["tasklist", "/FI", "STATUS eq RUNNING", "/NH"],
-            shell=False, text=True
+            shell=False, text=True, creationflags=_NO_CONSOLE_WINDOW,
         )
         return list(set([
             line.split()[0]
@@ -1477,6 +1898,8 @@ def _focus_window(hwnd) -> bool:
                     win32process.AttachThreadInput(current_thread, thread_id, False)
                 except Exception as e:
                     log_debug(f"[actions] _focus_window ignored: {e}")
+        # What the AI types next goes here (ai/direct_input.py).
+        direct_input.set_target(hwnd)
         return True
     except Exception as e:
         print(f"[tool_open_application] Could not focus existing window: {e}")
@@ -1598,7 +2021,11 @@ def _launch_native_app(app_name: str):
         process_name = target[:-4] if target.lower().endswith(".exe") else target
 
         def _launch():
-            subprocess.Popen([target], shell=False)
+            # A console of its own for cmd.exe and PowerShell: Kestrel
+            # hides every console window its child processes would get
+            # (ai/lazy_import.py), and this is the one case where the
+            # user asked to see it. GUI programs ignore the flag.
+            subprocess.Popen([target], shell=False, creationflags=_NEW_CONSOLE)
         return process_name, _launch
     else:  # "uri"
         def _launch():
@@ -1630,7 +2057,8 @@ def _open_fresh_browser_tab() -> bool:
     """
     try:
         time.sleep(0.6)
-        pyautogui.hotkey("ctrl", "t")
+        if not _new_tab():
+            return False
         time.sleep(0.5)
         return True
     except Exception as e:
@@ -1657,6 +2085,9 @@ def tool_open_application(app_name: str) -> str:
     refusal = _check_emergency_stop()
     if refusal:
         return refusal
+    # Typing goes to the app this opens (set when its window is focused),
+    # or the window in front, not to one clicked before.
+    direct_input.forget_target()
 
     # Opening an app is the lowest-risk tier - but it still has to go
     # through the SAME per-session limiter as tool_run_command/
@@ -1762,7 +2193,7 @@ def tool_close_application(app_name: str) -> str:
         # an unnecessary injection surface for no benefit over argv form.
         result = subprocess.run(
             ["taskkill", "/IM", real_name, "/F"],
-            shell=False, capture_output=True
+            shell=False, capture_output=True, creationflags=_NO_CONSOLE_WINDOW,
         )
         if result.returncode == 0:
             single_fcn = True
@@ -1797,41 +2228,164 @@ def tool_write_and_enter(text: str) -> str:
     # own copy, which had drifted: it never got the trailing Delete that
     # clears an address bar's autocomplete selection, and when _type_text
     # learned to type accented characters this copy would not have.
-    _type_text(text)
+    typed = _type_text(text)
+    if not typed:
+        # No Enter after text that didn't all go in: a command cut short
+        # would run as it is.
+        if typed.started:
+            return (f"Stopped typing {_preview(text)} partway: {typed.note}. Part of it is already "
+                    f"in the field, and Enter was not pressed. Look at the screen before typing again.")
+        return f"Nothing was typed: {typed.note}."
     actions_list.append((text, "write"))
-    keyboard.press("enter")
+    pressed = _press_key("enter")
+    if not pressed:
+        return f"Typed {_preview(text)} but didn't press Enter: {pressed.note}."
     actions_list.append(("enter", "enter"))
     time.sleep(0.6)
     single_fcn = True
-    preview = text if len(text) <= 60 else text[:57] + "..."
-    return f"Typed {preview!r} and pressed Enter."
+    return f"Typed {_preview(text)} and pressed Enter."
 
 
-def tool_enter() -> None:
+def tool_enter() -> str:
     """
     Press the Enter key at the current focus position.
     Use when you need to confirm an action without typing anything.
     """
     global single_fcn
     print("Pressing Enter...")
-    keyboard.press("enter")
+    pressed = _press_key("enter")
+    if not pressed:
+        return f"Enter was not pressed: {pressed.note}."
     actions_list.append(("enter", "enter"))
     single_fcn = True
+    return "Pressed Enter."
 
 
-def tool_new_page() -> None:
+# Combinations that close a window or delete for good: asked about first,
+# like closing an application.
+_KEYS_TO_CONFIRM = frozenset("+".join(sorted(combo.split("+"))) for combo in (
+    "alt+f4", "ctrl+w", "ctrl+q", "ctrl+shift+w", "ctrl+f4", "shift+delete",
+))
+
+# Other ways of writing those keys, so "shift+del" or "left ctrl+w" is
+# asked about too.
+_KEY_SPELLINGS = {
+    "del": "delete", "control": "ctrl", "ctl": "ctrl", "strg": "ctrl", "suppr": "delete",
+    "left ctrl": "ctrl", "right ctrl": "ctrl", "lctrl": "ctrl", "rctrl": "ctrl",
+    "left control": "ctrl", "right control": "ctrl",
+    "left alt": "alt", "right alt": "alt", "lalt": "alt", "ralt": "alt", "alt gr": "alt", "altgr": "alt",
+    "left shift": "shift", "right shift": "shift", "lshift": "shift", "rshift": "shift",
+}
+
+
+def _needs_confirming(combo: str) -> bool:
+    """Whether any step of `combo` closes a window or deletes for good.
+    keyboard takes "a, b" as two presses in a row, so each step is
+    checked; and it accepts key names of the keyboard layout in use
+    ("maj+suppr" on a French one), so the keys themselves are compared
+    too, by scan code."""
+    for step in combo.split(","):
+        parts = [_KEY_SPELLINGS.get(" ".join(part.split()), " ".join(part.split()))
+                 for part in step.split("+") if part.strip()]
+        if parts and "+".join(sorted(parts)) in _KEYS_TO_CONFIRM:
+            return True
+    return _confirm_by_scan_code(combo)
+
+
+_confirm_scan_codes = None
+
+
+def _scan_code_steps(combo: str):
+    """keyboard's reading of a combination: one entry per step, each a
+    list of keys, each key the set of scan codes it can be. None when it
+    can't be read (keyboard isn't the real one, or the name is unknown)."""
+    try:
+        steps = keyboard.parse_hotkey(combo)
+    except Exception:
+        return None
+    if not isinstance(steps, tuple):
+        return None
+    try:
+        return [[set(key) for key in step] for step in steps]
+    except TypeError:
+        return None
+
+
+def _confirm_by_scan_code(combo: str) -> bool:
+    import itertools
+
+    global _confirm_scan_codes
+    wanted_keys = _confirm_scan_codes
+    if wanted_keys is None:
+        readings = [_scan_code_steps(c) for c in sorted(_KEYS_TO_CONFIRM)]
+        wanted_keys = [r[0] for r in readings if r and len(r) == 1]
+        if wanted_keys:                      # kept once keyboard could read them
+            _confirm_scan_codes = wanted_keys
+    steps = _scan_code_steps(combo)
+    if not steps:
+        return False
+    for step in steps:
+        for wanted in wanted_keys:
+            if len(step) != len(wanted):
+                continue
+            # The same keys in any order, each matching one of the confirm
+            # combination's keys (left Ctrl is one of Ctrl's scan codes).
+            if any(all(key & want for key, want in zip(order, wanted))
+                   for order in itertools.permutations(step)):
+                return True
+    return False
+
+
+def tool_press_keys(keys: str) -> str:
+    """
+    Press one key or a key combination in the window you are working in:
+    "enter", "escape", "tab", "delete", "ctrl+a", "ctrl+c", "ctrl+v",
+    "ctrl+l", "alt+tab", "win+r", "f5". Parts joined with "+".
+    Use it when the user asks for a shortcut or a key, to close a popup
+    with Escape, or to move to the next field with Tab. To open an app,
+    tool_open_application is still the way.
+    """
+    global single_fcn
+    refusal = _check_emergency_stop()
+    if refusal:
+        return refusal
+    combo = "+".join(part.strip() for part in (keys or "").lower().split("+") if part.strip())
+    if not combo:
+        return "No key was given."
+    if _needs_confirming(combo):
+        if not risk_gate.require_approval(f"Press {combo}? It closes a window or deletes for good."):
+            return f"Refused: pressing {combo} was not approved."
+    print(f"Pressing {combo}...")
+    if "+" in combo or combo in _WINDOWS_KEY_NAMES:
+        pressed = _press_hotkey(combo)
+    else:
+        pressed = _press_key(combo)
+    if not pressed:
+        return f"{combo} was not pressed: {pressed.note}."
+    # Recorded as a block, the way the macro editor stores a key
+    # combination (ai/macro_blocks.py).
+    actions_list.append({"type": "hotkey", "keys": combo})
+    single_fcn = True
+    return f"Pressed {combo}."
+
+
+def tool_new_page() -> str:
     """
     Open a new browser tab (Ctrl+T).
     Use this when the browser is already open and you need a second destination.
     """
     global single_fcn
-    if _check_emergency_stop():
-        return
+    refusal = _check_emergency_stop()
+    if refusal:
+        return refusal
     print("Opening New Tab...")
-    pyautogui.hotkey('ctrl', 't')
+    opened = _new_tab()
+    if not opened:
+        return f"No new tab was opened: {opened.note}."
     actions_list.append(("new_page", "ctrl+t"))
     time.sleep(0.5)
     single_fcn = True
+    return "Opened a new tab."
 
 
 def tool_wait() -> None:
@@ -1945,6 +2499,9 @@ def tool_run_command(command: str) -> str:
             capture_output=True,
             text=True,
             timeout=60,
+            # The output is captured and shown in the chat; a console
+            # window flashing up on top of everything adds nothing.
+            creationflags=_NO_CONSOLE_WINDOW,
         )
         output = ((result.stdout or "") + (result.stderr or "")).strip()
         if not output:
@@ -1977,6 +2534,13 @@ def tool_screenshot() -> str:
     one, since a tool call can't hand you an image back directly) - so
     after calling this, tell the user the capture is done; you'll be
     able to describe or act on what's in it as soon as you receive it.
+
+    What this returns now also lists the controls of the window in front,
+    by name, type and screen position (Windows UI Automation), and what
+    changed since your previous screenshot of the same window - including
+    when a DIFFERENT control now sits at coordinates where another one
+    was. Use the names to be sure which control is which; don't assume a
+    button is the same one because it is in the same place.
     """
     # Deferred import: ai.main imports ai.actions at module load time, so
     # importing it back at module level here would be circular.
@@ -1989,122 +2553,352 @@ def tool_screenshot() -> str:
     # completing anything; setting it here used to make autonomous mode
     # stop immediately the moment the model glanced at the screen
     # mid-task, treating a look as if it were the finished goal.
-    return "Screenshot taken successfully. It will be attached to your next message."
+    result = "Screenshot taken successfully. It will be attached to your next message."
+    try:
+        from ai.discovery import screen_map
+        controls = screen_map.describe()
+    except Exception as e:
+        log_debug(f"[actions] screen map skipped: {e}")
+        controls = ""
+    if controls:
+        result += "\n\n" + controls
+    return result
 
 
-def tool_discover_application_ui(app_name: str, force_remap: bool = False) -> str:
+def tool_check_control_at(x: int, y: int) -> str:
     """
-    Map an already-open application's screens and controls via structural
-    accessibility parsing (Windows UI Automation) instead of vision -
-    Phase 2's Structural UI Mapping engine. Use this ONCE per app, the
-    first time Kestrel needs to work with it repeatedly, rather than
-    relying on get_position_object_and_click for every single click going
-    forward: it explores every reachable screen from the current one,
-    typing mock values into inputs to see what they lead to, and produces
-    a reusable library of atomic tool_click_*/tool_input_* functions that
-    call ai.discovery.runtime immediately after this returns (no restart
-    needed) - plus a JSON state graph saved under ai/discovery/trees/.
+    Says which control is at screen position (x, y) right now - its name,
+    type and box, read from Windows UI Automation - and whether it is the
+    same control that was there in your last screenshot or a different
+    one.
 
-    Requires the app to already be open and focused/findable by window
-    title (open it first with tool_open_application if it isn't running).
-    Only works on Windows today - refuses with an explanation otherwise.
-
-    This can take a while (it's actively clicking through the app) and
-    will visibly move focus/mouse - treat it like any other action that
-    takes over the screen. Destructive-looking controls (delete, purge,
-    submit order, ...) are recorded but never clicked during the mapping
-    run itself.
-
-    force_remap: bug fix - this used to click through the ENTIRE app
-    from scratch every single time it was called, even for an app
-    that already had a saved state graph on disk from a previous run
-    (map_application_ui() always started from an empty seen_signatures
-    dict, with nothing here ever checking ai/discovery/trees/ first).
-    The visible symptom was exactly "it keeps going back into the same
-    buttons even though it already mapped them" - every call re-clicked
-    every already-known screen, permanently, no matter how many times
-    it had already been run. Now, unless force_remap=True, an existing
-    saved tree for this app is loaded and its actions re-registered
-    (cheap - no clicking, no window focus stolen) instead of re-running
-    the click-through. Pass force_remap=True when the app's UI is known
-    to have changed (an update, a redesign) and the saved map is stale.
+    Use it before clicking coordinates you got from an earlier screenshot
+    when the screen may have changed since (a dialog opened, a list
+    scrolled, a page loaded): the same coordinates can hold a different
+    button. x and y are screen pixels, as listed with the screenshot.
     """
+    try:
+        from ai.discovery import screen_map
+        return screen_map.check_point(int(x), int(y))
+    except Exception as e:
+        return f"Couldn't read the control at ({x}, {y}): {e}"
+
+
+@dataclass
+class MappingResult:
+    """How a mapping run went: the Mapping page shows it, and
+    tool_discover_application_ui words it for the AI."""
+    app: str
+    ok: bool = False
+    reused: bool = False         # a complete earlier map was used; nothing was clicked
+    kept_earlier: bool = False   # stopped short, so the earlier complete map was kept
+    ending: str = ""             # "complete", "stopped", "screen_limit", "action_limit"
+    screens: int = 0             # what this run found (or the reused map holds)
+    controls: int = 0
+    window: str = ""
+    program: str = ""
+    path: str = ""
+    error: str = ""
+    outline: str = ""            # the map the AI can use now
+
+
+def run_mapping(app_name: str, force_remap: bool = False, ask_limiter: bool = True) -> MappingResult:
+    """
+    Map an open app, or use its saved map. What tool_discover_application_ui
+    and the Mapping page's Start button both run.
+
+    A saved map is used instead of clicking through the app again only
+    when the run that made it finished; one that was stopped or hit a
+    limit is mapped again. A run that stops short doesn't replace a
+    finished map: the finished one is kept.
+
+    ask_limiter: count this against the AI's action budget for the run
+    (ai/safety.py). The Mapping page passes False: that budget is for
+    what the AI does, not for someone pressing Start.
+
+    One automation at a time (ai/automation_lock.py): while an AI run or
+    a macro is going, this refuses and says which.
+    """
+    result = MappingResult(app=app_name)
     refusal = _check_emergency_stop()
     if refusal:
-        return refusal
+        result.error = refusal
+        return result
+    if ask_limiter:
+        limiter_refusal = safety.limiter.check_and_record(RiskLevel.MEDIUM)
+        if limiter_refusal:
+            result.error = limiter_refusal
+            return result
 
-    limiter_refusal = safety.limiter.check_and_record(RiskLevel.MEDIUM)
-    if limiter_refusal:
-        return limiter_refusal
+    from ai import automation_lock
+    try:
+        with automation_lock.hold("a mapping run"):
+            return _run_mapping(app_name, force_remap, result)
+    except automation_lock.Busy as busy:
+        result.error = str(busy)
+        return result
 
-    from ai.discovery import map_application_ui, compile_action_tree, DiscoveryError
+
+def _run_mapping(app_name: str, force_remap: bool, result: MappingResult) -> MappingResult:
+    from ai.discovery import DiscoveryError, map_application_ui
     from ai.discovery import events as discovery_events
-    from ai.discovery.tree import ActionTree
+    from ai.discovery.tree import ActionTree, map_path
 
-    if not force_remap:
-        existing_path = ActionTree(app_name=app_name)._default_path()
-        if os.path.exists(existing_path):
-            try:
-                existing_tree = ActionTree.load(existing_path)
-                actions_path = compile_action_tree(existing_tree)
-                from ai.discovery.compiler import register_compiled_actions
-                import ai.actions as actions_module
-                registered = register_compiled_actions(actions_module, existing_tree)
-                print(f"[tool_discover_application_ui] {app_name!r} already mapped ({existing_path}) - reusing it instead of re-clicking through the app.")
-                return (
-                    f"{app_name} was already mapped previously: {existing_tree.node_count()} screen(s), "
-                    f"{existing_tree.action_count()} action(s), loaded from {existing_path}. Re-registered "
-                    f"{registered} atomic action(s) (tool_click_*/tool_input_* for {app_name}) - they're "
-                    f"callable now, no re-clicking needed. If the app's UI has changed since this map was "
-                    f"made, call this again with force_remap=True to redo it from scratch."
-                )
-            except Exception as e:
-                print(f"[tool_discover_application_ui] Existing map at {existing_path} couldn't be loaded ({e}) - mapping fresh instead.")
+    path = map_path(app_name)
+    earlier = None
+    if os.path.exists(path):
+        try:
+            earlier = ActionTree.load(path)
+        except Exception as e:
+            print(f"[mapping] The saved map at {path} couldn't be read ({e}); mapping {app_name!r} again.")
 
-    print(f"[tool_discover_application_ui] Starting mapping run of {app_name!r}...")
+    if earlier is not None and earlier.complete and not force_remap:
+        print(f"[mapping] {app_name!r} was mapped before ({path}); using that map instead of clicking through the app again.")
+        _describe_map(result, earlier, path)
+        result.ok = result.reused = True
+        return result
+
+    print(f"[mapping] Mapping {app_name!r}...")
     discovery_events.notify_started(app_name)
     tree = None
     try:
         try:
-            tree = map_application_ui(app_name, on_progress=discovery_events.notify_progress)
+            def window_found(title: str, program: str) -> None:
+                # Known before the run starts, so a run that fails partway
+                # still says which window it was (the Mapping page brings
+                # Kestrel back over that app).
+                result.window, result.program = title, program
+
+            tree = map_application_ui(
+                app_name,
+                on_progress=discovery_events.notify_progress,
+                on_node=discovery_events.notify_node,
+                on_edge=discovery_events.notify_edge,
+                on_window=window_found,
+            )
         except DiscoveryError as e:
-            print(f"[tool_discover_application_ui] {e}")
-            return f"Could not discover {app_name}: {e}"
+            print(f"[mapping] {e}")
+            result.error = str(e)
+            return result
         except Exception as e:
-            handled = _handle_pyautogui_exception(e)
-            if handled:
-                return handled
-            print(f"[tool_discover_application_ui] Unexpected error: {e}")
-            return f"UI mapping of {app_name} failed: {e}"
+            print(f"[mapping] Mapping {app_name!r} failed: {e}")
+            result.error = _handle_pyautogui_exception(e) or str(e)
+            return result
 
-        tree_path = tree.save()
-        actions_path = compile_action_tree(tree)
-
-        from ai.discovery.compiler import register_compiled_actions
-        import ai.actions as actions_module
-        registered = register_compiled_actions(actions_module, tree)
-
-        global single_fcn
-        single_fcn = True
-
-        return (
-            f"Mapped {app_name}: {tree.node_count()} screen(s), {tree.action_count()} action(s) "
-            f"discovered. State graph saved to {tree_path}. Compiled {registered} atomic action(s) "
-            f"to {actions_path} - they're already callable now (tool_click_*/tool_input_* for {app_name})."
-        )
+        if not tree.complete and earlier is not None and earlier.complete:
+            print(f"[mapping] The run ended early ({tree.ending}); keeping the earlier full map at {path}.")
+            _describe_map(result, earlier, path)
+            result.kept_earlier = True
+        else:
+            _describe_map(result, tree, tree.save(path))
+        result.screens, result.controls = tree.node_count(), tree.action_count()
+        result.ending = tree.ending
+        result.ok = True
+        return result
     finally:
-        # Guaranteed regardless of how the run ended (success, a
-        # DiscoveryError, an unexpected exception) - otherwise the
-        # Mapping Monitor window (app/mapping_monitor.py) would stay
-        # shown/spinning forever after a failed run, exactly the kind
-        # of "cleanup skipped on the error path" bug the screenshot-leak
-        # fix earlier in this file's history already taught this app not
-        # to repeat.
+        # Whatever happened, so the overlay and the Mapping page never
+        # stay on "mapping" after a failed run.
         discovery_events.notify_finished(
             app_name,
             tree.node_count() if tree is not None else 0,
             tree.action_count() if tree is not None else 0,
         )
+
+
+def _describe_map(result: MappingResult, tree, path: str) -> None:
+    result.screens, result.controls = tree.node_count(), tree.action_count()
+    result.ending = tree.ending
+    result.window, result.program = tree.window_title, tree.program
+    result.path = path
+    result.outline = tree.outline()
+
+
+_ENDINGS = {
+    "stopped": "it was stopped",
+    "screen_limit": "it reached the most screens one run maps",
+    "action_limit": "it reached the most clicks one run makes",
+}
+
+_USING_A_MAP = ("To press one of its controls or type into one of its fields, call "
+                "tool_use_mapped_control with the app name and the control's name as the "
+                "map shows it, and the screen id when two screens have a control of that name.")
+
+
+def _mapping_report(result: MappingResult) -> str:
+    """A mapping run, for the AI."""
+    app = result.app
+    if result.error:
+        return f"Could not map {app}: {result.error}"
+    where = f" (window {result.window!r})" if result.window else ""
+    if result.reused:
+        return (f"{app} was mapped before{where}: {result.screens} screen(s), {result.controls} "
+                f"control(s). {_USING_A_MAP} If the app has changed since, call this again with "
+                f"force_remap=True to map it again.\n\nThe saved map (positions are from when it "
+                f"was made):\n{result.outline}")
+    if result.kept_earlier:
+        return (f"Mapping {app} ended before it finished ({_ENDINGS.get(result.ending, result.ending)}), "
+                f"after {result.screens} screen(s). The earlier full map of {app} is kept, and it is "
+                f"the one used. {_USING_A_MAP}\n\nThe map:\n{result.outline}")
+    if result.ending == "complete":
+        head = f"Mapped {app}{where}"
+    else:
+        head = (f"Mapping {app}{where} ended before it finished "
+                f"({_ENDINGS.get(result.ending, result.ending)}); what it found is saved")
+    return (f"{head}: {result.screens} screen(s), {result.controls} control(s). {_USING_A_MAP}\n\n"
+            f"The map (screen pixels, each screen under the control that opens it):\n{result.outline}")
+
+
+def tool_discover_application_ui(app_name: str, force_remap: bool = False) -> str:
+    """
+    Map an open application's screens and controls through Windows UI
+    Automation, so its controls can then be pressed by name with
+    tool_use_mapped_control instead of one screenshot per click.
+
+    Use it once per app you will work with repeatedly. It clicks through
+    every screen it can reach from the current one and types a test value
+    into empty one-line fields, so it takes a while and works in the app's
+    window. Buttons that delete, send, pay, post or log out are recorded
+    but never pressed while mapping.
+
+    The app must already be open (tool_open_application first). The
+    window is found by its program name or its title.
+
+    A finished earlier map is reused without clicking anything. Pass
+    force_remap=True when the app has changed since (an update, a new
+    layout).
+    """
+    global single_fcn
+    result = run_mapping(app_name, force_remap=force_remap)
+    if result.ok and not result.reused:
+        single_fcn = True
+    return _mapping_report(result)
+
+
+def _same_words(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def _mapped_controls(tree, control: str, screen: str = "") -> list:
+    """(screen, action) pairs in a map whose control is named `control`
+    (or has that action id), each control once however many screens list
+    it. The whole name, never a part: "Save" is not "AutoSave"."""
+    wanted, screen_key = _same_words(control), _same_words(screen)
+    found, seen = [], set()
+    if not wanted:
+        return found
+    for node_id, node in tree.nodes.items():
+        if screen_key and screen_key not in (_same_words(node_id), _same_words(node.title)):
+            continue
+        for action in node.discovered_actions:
+            if action.accessibility_path in seen:
+                continue
+            if wanted in (_same_words(action.name), _same_words(action.action_id)):
+                found.append((node, action))
+                seen.add(action.accessibility_path)
+    return found
+
+
+def _similar_control_names(tree, control: str, limit: int = 5) -> list:
+    names = sorted({a.name for node in tree.nodes.values() for a in node.discovered_actions if a.name})
+    by_lower = {name.lower(): name for name in names}
+    close = difflib.get_close_matches(control.lower(), list(by_lower), n=limit, cutoff=0.6)
+    partial = [name for name in names if control.lower() in name.lower() and name.lower() not in close]
+    return [by_lower[name] for name in close] + partial[:max(0, limit - len(close))]
+
+
+def _where_on_the_map(tree, node) -> str:
+    """A screen as the map outline names it, and the control that opens it."""
+    label = node.current_node_id + (f' "{node.title}"' if node.title else "")
+    parent = tree.nodes.get(node.parent_node_id) if node.parent_node_id else None
+    if parent is not None:
+        opener = next((a for a in parent.discovered_actions if a.action_id == node.via_action_id), None)
+        if opener is not None:
+            label += f", opened by {opener.name or opener.element_type!r} on {parent.current_node_id}"
+    return label
+
+
+def tool_use_mapped_control(app_name: str, control: str, screen: str = "", text: str = "") -> str:
+    """
+    Press a control in an app mapped with tool_discover_application_ui: a
+    button, menu item, tab, check box or list item, by its name as the
+    map shows it. For a text field, pass `text` and it is typed in.
+    `screen` is the screen id from the map (screen_notepad_002), needed
+    only when two screens have a control with that name.
+
+    The control is looked up in the app's window as it is now. If it
+    isn't there (another screen is open), nothing is pressed and the
+    reply says which screen has it: open that one first. Controls the
+    map marks destructive ask the user first.
+    """
+    global single_fcn
+    refusal = _check_emergency_stop()
+    if refusal:
+        return refusal
+    from ai.discovery.errors import DiscoveryError
+    from ai.discovery.tree import ActionTree, map_path
+
+    path = map_path(app_name)
+    if not os.path.exists(path):
+        return f"{app_name} has no saved map. Map it first with tool_discover_application_ui."
+    try:
+        tree = ActionTree.load(path)
+    except Exception as e:
+        return f"The saved map of {app_name} couldn't be read: {e}"
+    matches = _mapped_controls(tree, control, screen)
+    if not matches:
+        on = f" on {screen}" if screen else ""
+        similar = _similar_control_names(tree, control)
+        hint = f" Close names in the map: {', '.join(repr(n) for n in similar)}." if similar else ""
+        return (f"The map of {app_name} has no control named {control!r}{on}. Use the whole name "
+                f"as the map shows it.{hint}")
+
+    try:
+        from ai.discovery.accessibility import get_backend
+        backend = get_backend(app_name, take=False)
+    except DiscoveryError as e:
+        return f"Couldn't reach {app_name}'s window: {e}"
+    # A minimized window's controls are all off screen.
+    backend.show_if_minimized()
+
+    found = None
+    for node, action in matches:
+        element = backend.find_by_path(action.accessibility_path)
+        if element is None or element.is_offscreen or element.control_type != action.element_type:
+            continue
+        # A path made of positions ("Pane[0]/Button[3]") points at
+        # whatever is in that place now, which after a change in the app
+        # is another control: its name has to match too.
+        if "[" in action.accessibility_path and action.name and \
+                _same_words(element.name) != _same_words(action.name):
+            continue
+        found = (node, action, element)
+        break
+    if found is None:
+        places = list(dict.fromkeys(_where_on_the_map(tree, node) for node, _ in matches))
+        return (f"{control!r} isn't in {app_name}'s window now, so nothing was pressed. The map has "
+                f"it on {'; '.join(places)}. Open that screen first.")
+
+    node, action, element = found
+    label = element.name or action.name or control
+    if not element.is_enabled:
+        return f"{label!r} is greyed out in {app_name} right now; nothing was pressed."
+    if action.is_destructive or safety.is_destructive_label(label):
+        if not risk_gate.require_approval(f"Press \"{label}\" in {app_name}?"):
+            return f"Refused: pressing {label!r} in {app_name} was not approved."
+
+    if action.requires_input:
+        if not text:
+            return f"{label!r} is a field. Pass the text to type into it."
+        if not backend.input_value(element, text):
+            return _check_emergency_stop() or f"{_preview(text)} couldn't be typed into {label!r}."
+        single_fcn = True
+        return f"Typed {_preview(text)} into {label!r} in {app_name}."
+    if text:
+        return f"{label!r} is a {action.element_type.lower()}, not a field: it takes no text. Nothing was pressed."
+    if not backend.activate(element):
+        return _check_emergency_stop() or f"{label!r} in {app_name} couldn't be pressed."
+    single_fcn = True
+    return f"Pressed {label!r} in {app_name}."
 
 
 def _sanitize_macro_name(name: str) -> str:
@@ -2156,6 +2950,17 @@ def tool_name_action(name: str, description: str | None = None) -> None:
 
     recorded_data = list(actions_list)
     name = _sanitize_macro_name(name)
+    if not recorded_data:
+        # Nothing was done on screen: the goal was met by reading the web
+        # (tool_read_url and friends are not recorded), by a command, or
+        # was already true. There is nothing to replay, and an empty macro
+        # would only sit in the tool list looking like a skill.
+        print(f"[tool_name_action] Goal complete. Nothing was done on screen, so no macro was saved ({name}).")
+        last_saved_name = None
+        last_saved_actions = None
+        last_appended_block = None
+        fcn_name = True
+        return
     print(f"Naming Action: {name}")
 
     last_saved_name = name

@@ -140,22 +140,24 @@ class SplashPage(QWidget):
         # finishes, defeating the point of updating it at all.
         self.repaint()
 
-    def ensure_minimum_display_time(self, min_seconds: float = 2.6) -> None:
+    def ensure_minimum_display_time(self, min_seconds: float = 0.0) -> None:
         """
         Blocks - via a local QEventLoop, which keeps painting/processing
         events, NOT a plain time.sleep, which would freeze the window -
         until at least `min_seconds` have passed since this page was
-        constructed. On a fast machine MainWindow's own construction plus this page's time on screen
-        could pass in well under a second, which read as an abrupt flash
-        rather than an intentional loading screen - this makes sure it's
-        never up for less than a moment even then, without slowing
-        anything down on a machine where it's already legitimately busy
-        for longer than this.
+        constructed.
 
-        Was 1.4s, which still read as an instant flash-and-gone on a
-        fast machine, over almost as soon as it appeared. Bumped to 2.6s so the logo/progress bar
-        actually register as an intro instead of a flicker, without
-        being so long it feels like a stall on its own.
+        The default is now zero, so startup never waits on purpose. It
+        was 2.6 s (1.4 s before that), meant to stop the splash reading
+        as a flash on a fast machine. In practice it was the single
+        largest part of every launch, and it bought nothing: MainWindow
+        builds itself synchronously right after showing this page,
+        without running the event loop, so the page could not be painted
+        until construction had finished anyway. The whole 2.6 s was spent
+        showing a loading screen for work that was already done.
+
+        Kept as a method, with the parameter, for any caller that does
+        want a floor.
         """
         elapsed = time.monotonic() - self._created_at
         remaining_ms = int(max(0.0, min_seconds - elapsed) * 1000)

@@ -70,6 +70,9 @@ class FakeAccessibilityBackend(AccessibilityBackend):
     def input_value(self, element, value):
         return self.activate(element)
 
+    def field_text(self, element):
+        return ""      # every field here is empty
+
     def find_back_control(self, element):
         for child, target in self.screens[element.id]["children"]:
             if target == "__BACK__":

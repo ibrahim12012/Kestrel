@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  installer/Kestrel.manifest
+  ==========================
+  The application manifest compiled into Kestrel.exe by Kestrel.spec.
+
+  The same content as the manifest PyInstaller writes by default, with
+  each part stated here rather than left to that default, because each
+  one is read by Windows and by antivirus heuristics (docs/ANTIVIRUS.md):
+
+  1. requestedExecutionLevel="asInvoker", uiAccess="false"
+     Kestrel never needs administrator rights and never drives windows
+     of a higher integrity level. Windows never shows a UAC prompt for
+     it, and a scanner can see the binary doesn't ask for either.
+
+  2. supportedOS
+     Declaring Windows 10/11 support turns off the compatibility shims
+     Windows applies to a binary that declares nothing.
+
+  3. longPathAware
+     Paths longer than 260 characters work where Windows allows them.
+
+  4. Common Controls 6
+     The version of the Windows controls every modern program gets. Its
+     absence changes how the few native dialogs look and behave.
+
+  Deliberately NOT declared:
+
+  - DPI awareness. Qt sets it when the app starts (per-monitor v2).
+    Declaring it here as well meant Qt's own call failed and Qt ran
+    with a setting it had not chosen. See main.py.
+  - activeCodePage UTF-8. It changes the "ANSI" code page of the whole
+    process, for every DLL loaded into it, including ones injected by
+    other programs. Nothing in Kestrel needs it: Python and Qt both use
+    the Unicode Windows APIs.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+
+  <assemblyIdentity
+      type="win32"
+      name="Kestrel.DesktopApp"
+      version="1.0.0.0"
+      processorArchitecture="*"/>
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <!-- Windows 8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+</assembly>

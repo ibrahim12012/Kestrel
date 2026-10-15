@@ -35,12 +35,18 @@ import re
 import io
 import concurrent.futures
 
-from google import genai
-from google.genai import types
 from PIL import ImageGrab, ImageChops, Image
 from dotenv import load_dotenv
-import pyautogui
 import keyboard
+
+# google-genai and pyautogui are imported on first use rather than here
+# (see ai/lazy_import.py). Everything this module imports is paid for
+# before the window can appear, and google.genai.types alone builds
+# several hundred pydantic models at import. `types.X` and
+# `pyautogui.x()` inside functions work unchanged. `genai` itself was
+# imported here but never used; ai/model_client.py builds the client.
+from ai.lazy_import import LazyModule, pyautogui
+types = LazyModule("google.genai.types")
 
 # ── Optional voice-mode dependencies ───────────────────────────────
 # speech_recognition needs a working microphone + PyAudio; winsound is
@@ -111,6 +117,9 @@ AUTO_INSTRUCTIONS_PATH  = os.path.join(rel_path, "autonomous_instructions.txt")
 # by the SDK's automatic function calling).
 ENV_PATH                = os.path.join(USER_DATA_PATH, ".env")
 SCREENSHOTS_DIR         = os.path.join(USER_DATA_PATH, "ai", "screenshots")
+# One folder per autonomous run, holding the screen it saw at each step
+# (see ai/run_screenshots.py).
+RUN_SCREENSHOTS_DIR     = os.path.join(SCREENSHOTS_DIR, "runs")
 
 
 def load_instructions() -> str:
@@ -127,6 +136,7 @@ def load_instructions() -> str:
     run first.
     """
     _seed_instructions_file()
+    _refresh_instructions_file()
     return load_file(INSTRUCTIONS_PATH)
 
 
@@ -154,6 +164,13 @@ tools      = []
 # expensive provider-session construction to the moment it matters -
 # see drop_macro_tool / _ensure_chat_session_fresh.
 _tools_stale = False
+
+# Which saved chat `chat` currently holds (see use_chat), and the other
+# recently used chats' conversations, kept so switching back and forth in
+# the sidebar doesn't rebuild them each time. chat_id -> (session, config key).
+_bound_chat_id = None
+_stashed_sessions: "dict[int, tuple]" = {}
+_MAX_STASHED_SESSIONS = 4
 
 # ── Initialization guard ──────────────────────────────────────────
 _initialized = False
@@ -1229,34 +1246,85 @@ def reset_safety_limits() -> None:
 
 
 # ── Sound effects / notifications ────────────────────────────────────
-# Short, distinct beep patterns (Windows-only via winsound) so events that
-# happen while Kestrel isn't in the foreground - an automation finishing,
-# the wake word triggering, a screenshot being captured - are still
-# noticeable. Silently does nothing if winsound isn't available (e.g. not
-# on Windows) or a kind isn't recognized.
-_SOUND_PATTERNS = {
-    "screenshot":           [(1000, 200)],
-    "automation_finished":  [(700, 120), (1000, 120), (1300, 180)],
-    "automation_stopped":   [(500, 250)],
-    "macro_finished":       [(900, 130), (1200, 160)],
-    "wake_word":            [(1200, 120)],
-    "confirm_accept":       [(900, 110), (1300, 150)],
-    "confirm_refuse":       [(500, 200)],
-    "human_handoff":        [(1100, 150), (700, 150), (1100, 150)],
-}
+# So that events happening while Kestrel isn't in the foreground - an
+# automation finishing, the wake word triggering, a screenshot being
+# captured - are still noticeable. The sounds and the player are in
+# ai/sounds.py (assets/sounds/*.wav, played without blocking and without
+# cutting off Read aloud). Settings > Sounds turns them all off.
+
+def get_sounds_enabled() -> bool:
+    """Sound effects on or off. On by default: they are how a run that
+    finishes in the background gets noticed at all."""
+    val = os.getenv("KESTREL_SOUNDS_ENABLED")
+    if val is None:
+        val = _read_env_file().get("KESTREL_SOUNDS_ENABLED", "1")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
-def play_notification_sound(kind: str) -> None:
-    if winsound is None:
-        return
-    pattern = _SOUND_PATTERNS.get(kind)
-    if not pattern:
+def set_sounds_enabled(enabled: bool) -> None:
+    value = "1" if enabled else "0"
+    _write_env_value("KESTREL_SOUNDS_ENABLED", value)
+    os.environ["KESTREL_SOUNDS_ENABLED"] = value
+
+
+def get_show_mapping_overlay() -> bool:
+    """Whether a mapping run shows its map in the see-through panel in the
+    corner of the screen (app/mapping_monitor.py). On by default; the
+    Mapping page shows the same map either way and has the switch."""
+    val = os.getenv("KESTREL_SHOW_MAPPING_OVERLAY")
+    if val is None:
+        val = _read_env_file().get("KESTREL_SHOW_MAPPING_OVERLAY", "1")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def set_show_mapping_overlay(enabled: bool) -> None:
+    value = "1" if enabled else "0"
+    _write_env_value("KESTREL_SHOW_MAPPING_OVERLAY", value)
+    os.environ["KESTREL_SHOW_MAPPING_OVERLAY"] = value
+
+
+def get_mouse_fallback() -> bool:
+    """Settings > Mouse. The AI clicks without the user's mouse (see
+    ai/direct_input.py); this says whether it may borrow the mouse for a
+    click that can't be made any other way. On by default: off, those
+    clicks are skipped and the AI is told why."""
+    val = os.getenv("KESTREL_MOUSE_FALLBACK")
+    if val is None:
+        val = _read_env_file().get("KESTREL_MOUSE_FALLBACK", "1")
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def set_mouse_fallback(enabled: bool) -> None:
+    value = "1" if enabled else "0"
+    _write_env_value("KESTREL_MOUSE_FALLBACK", value)
+    os.environ["KESTREL_MOUSE_FALLBACK"] = value
+
+
+def play_notification_sound(kind: str, wait: bool = False) -> None:
+    """Play one of ai.sounds.KINDS, unless sounds are off. Never blocks
+    unless `wait` (see ai.sounds.play) and never raises."""
+    if not get_sounds_enabled():
         return
     try:
-        for freq, duration_ms in pattern:
-            winsound.Beep(freq, duration_ms)
+        import ai.sounds as sounds
+        sounds.play(kind, wait=wait)
     except Exception as e:
         print(f"[sound] Could not play '{kind}' notification: {e}")
+
+
+# Set while run_autonomous_mode is going. Sounds that belong to one step
+# of a run (a macro it plays finishing, a screenshot it takes) stay quiet
+# then: the run announces itself once, at the end.
+_autonomous_run_active = False
+
+
+def autonomous_run_active() -> bool:
+    return _autonomous_run_active
+
+
+# When the stop sound last played because of the stop shortcut, so the run
+# that then winds down doesn't play it a second time. time.monotonic().
+_stop_sound_played_at = 0.0
 
 
 def stop_automation_now() -> None:
@@ -1269,9 +1337,11 @@ def stop_automation_now() -> None:
     run_autonomous_mode), so this takes effect within at most one step.
     Bound to the "stop_automation" global shortcut by MainWindow.
     """
+    global _stop_sound_played_at
     actions.emergency_stop = True
     print("[stop] Stop shortcut triggered - halting any running automation.")
     play_notification_sound("automation_stopped")
+    _stop_sound_played_at = time.monotonic()
 
 
 def confirm_human_handoff_resolved() -> None:
@@ -1342,6 +1412,84 @@ def _seed_instructions_file() -> None:
     except Exception as e:
         print(f"[startup] Couldn't seed instructions.txt "
               f"({BUNDLED_INSTRUCTIONS_PATH} -> {INSTRUCTIONS_PATH}): {e}")
+
+
+# Default preference lines older builds shipped, and what they say now.
+# Only an exact match is changed: these were the app's words, not the
+# user's, and one of them sent every web lookup to autonomous mode.
+_RENAMED_DEFAULT_PREFERENCES = {
+    "- Web navigation always step by step - never construct URLs directly.":
+        "- In the browser, navigate step by step - never construct URLs directly.",
+    "- Use autonomous mode for any task requiring multiple steps or web navigation.":
+        "- Use autonomous mode for tasks done on screen in several steps; "
+        "look up and read the web yourself with the web tools.",
+}
+
+
+def _split_preferences(text: str):
+    """(before, preference lines, after) around the preferences block, or
+    None when the text has no complete block."""
+    start, end = text.find(PREFS_START_MARKER), text.find(PREFS_END_MARKER)
+    if start < 0 or end < start:
+        return None
+    block = text[start + len(PREFS_START_MARKER):end]
+    lines = [line.rstrip() for line in block.strip("\n").splitlines() if line.strip()]
+    return text[:start], lines, text[end + len(PREFS_END_MARKER):]
+
+
+def _merge_instructions(shipped: str, current: str) -> "str | None":
+    """The shipped prompt with `current`'s preferences in it. None when
+    either has no preferences block to line up."""
+    shipped_parts, current_parts = _split_preferences(shipped), _split_preferences(current)
+    if shipped_parts is None or current_parts is None:
+        return None
+    before, _shipped_defaults, after = shipped_parts
+    preferences = []
+    for line in current_parts[1]:
+        line = _RENAMED_DEFAULT_PREFERENCES.get(line, line)
+        if line not in preferences:
+            preferences.append(line)
+    return f"{before}{PREFS_START_MARKER}\n" + "\n".join(preferences) + f"\n{PREFS_END_MARKER}{after}"
+
+
+def _refresh_instructions_file() -> None:
+    """
+    Bring this install's instructions.txt up to the prompt the build
+    ships, keeping its preferences.
+
+    The copy under USER_DATA_PATH is seeded once, and after that the app
+    only ever writes to its preferences block. So a change to the prompt
+    in an update (a new tool, a new rule) never reached anyone who had
+    already run the app: they kept the prompt of whichever version they
+    first installed. Now everything outside the preferences block follows
+    the shipped file, and the preferences block stays as it is (apart
+    from the old default lines in _RENAMED_DEFAULT_PREFERENCES). The file
+    it replaces is kept next to it as instructions.previous.txt.
+
+    A no-op from source (one file), and whenever either file is missing
+    or has no preferences block to line up.
+    """
+    if BUNDLED_INSTRUCTIONS_PATH == INSTRUCTIONS_PATH:
+        return
+    try:
+        with open(BUNDLED_INSTRUCTIONS_PATH, "r", encoding="utf-8") as f:
+            shipped = f.read()
+        with open(INSTRUCTIONS_PATH, "r", encoding="utf-8") as f:
+            current = f.read()
+    except OSError:
+        return
+    merged = _merge_instructions(shipped, current)
+    if merged is None or merged == current:
+        return
+    try:
+        backup = os.path.join(os.path.dirname(INSTRUCTIONS_PATH), "instructions.previous.txt")
+        with open(backup, "w", encoding="utf-8") as f:
+            f.write(current)
+        with open(INSTRUCTIONS_PATH, "w", encoding="utf-8") as f:
+            f.write(merged)
+        print("[startup] Updated instructions.txt to this version's prompt (preferences kept)")
+    except OSError as e:
+        print(f"[startup] Couldn't update instructions.txt: {e}")
 
 
 def _migrate_legacy_env_keys() -> None:
@@ -1460,12 +1608,30 @@ def _ensure_chat_session_fresh() -> None:
     import ai.providers as providers
     system_instructions = _render_instructions(load_instructions())
     try:
-        chat = providers.create_chat_session(
-            get_active_provider(), get_active_model(), tools, str(system_instructions)
-        )
+        chat = _rebuilt_session(str(system_instructions))
     except providers.ProviderClientError as e:
         print(f"[AI] Could not rebuild chat session: {e}")
         chat = None
+
+
+def _rebuilt_session(system_instructions: str):
+    """
+    A new session for the current provider, model and tool list that
+    carries the current conversation's text over (images and tool-call
+    plumbing don't survive; see ai.providers.switch_provider).
+
+    A rebuilt tool list (a macro saved or deleted) used to start the
+    conversation over: the next message in the same chat was answered
+    as if nothing had been said before it.
+    """
+    import ai.providers as providers
+    try:
+        return providers.switch_provider(chat, get_active_provider(), get_active_model(), tools, system_instructions)
+    except providers.ProviderClientError:
+        raise
+    except Exception as e:
+        log_debug(f"[AI] Couldn't carry the conversation over to the rebuilt session: {e}")
+        return providers.create_chat_session(get_active_provider(), get_active_model(), tools, system_instructions)
 
 
 def _ensure_initialized():
@@ -1520,6 +1686,138 @@ def _ensure_initialized():
 
 
 # ══════════════════════════════════════════════════════════════════
+# CONVERSATIONS - one per saved chat, compacted when they grow too long
+# ══════════════════════════════════════════════════════════════════
+
+def _session_config_key() -> tuple:
+    """What a session was built for. A stashed session built for another
+    provider, model, tool list or system prompt is carried over to the
+    current one (text only) rather than used as it is."""
+    tool_names = tuple(sorted(getattr(t, "__name__", repr(t)) for t in (tools or [])))
+    return (
+        get_active_provider(),
+        get_active_model(),
+        tool_names,
+        hash(str(_render_instructions(load_instructions()))),
+        get_extended_thinking_enabled(),
+    )
+
+
+def _new_session_with_history(summary: str, turns: "list[tuple[str, str]]"):
+    import ai.providers as providers
+    from ai import compaction
+    from ai.providers.base import merge_consecutive_turns
+    session = providers.create_chat_session(
+        get_active_provider(), get_active_model(), tools, str(_render_instructions(load_instructions()))
+    )
+    seeded = merge_consecutive_turns(compaction.summary_turns(summary) + list(turns))
+    if seeded:
+        try:
+            session.seed_history(seeded)
+        except Exception as e:
+            # A chat that can still be talked to beats one that can't;
+            # it just starts without its earlier context.
+            print(f"[AI] Couldn't restore this chat's earlier messages: {e}")
+    return session
+
+
+def use_chat(chat_id: int, load_history=None) -> None:
+    """
+    Make `chat` hold the conversation of saved chat `chat_id`.
+
+    Called before every message the chat page sends (app/workers/
+    ai_worker.py). Nothing happens if it already does. Otherwise the
+    current conversation is put aside (up to _MAX_STASHED_SESSIONS of
+    them, so hopping between a few chats keeps each one's full live
+    history, images included), and `chat_id`'s is taken back out, or
+    rebuilt from its saved history: load_history() -> (summary, turns),
+    see app/chat_context.model_history.
+
+    There used to be one conversation for everything: every chat in the
+    sidebar talked to the same history, so a question in one chat was
+    answered with another chat's context, and a chat reopened after a
+    restart had no context at all.
+    """
+    global chat, _bound_chat_id
+    _ensure_initialized()
+    _ensure_chat_session_fresh()
+    if chat_id == _bound_chat_id and chat is not None:
+        return
+
+    import ai.providers as providers
+    key = _session_config_key()
+    if _bound_chat_id is not None and chat is not None:
+        _stashed_sessions.pop(_bound_chat_id, None)
+        _stashed_sessions[_bound_chat_id] = (chat, key)
+        while len(_stashed_sessions) > _MAX_STASHED_SESSIONS:
+            _stashed_sessions.pop(next(iter(_stashed_sessions)))
+
+    stashed = _stashed_sessions.pop(chat_id, None)
+    try:
+        if stashed is not None and stashed[1] == key:
+            chat = stashed[0]
+        elif stashed is not None:
+            chat = providers.switch_provider(
+                stashed[0], get_active_provider(), get_active_model(), tools,
+                str(_render_instructions(load_instructions())),
+            )
+        else:
+            summary, turns = load_history() if load_history is not None else ("", [])
+            chat = _new_session_with_history(summary, turns)
+    except providers.ProviderClientError as e:
+        print(f"[AI] {e}")
+        chat = None
+    _bound_chat_id = chat_id
+
+
+def forget_chat(chat_id: int) -> None:
+    """
+    Drop what is held of `chat_id`'s conversation, so the next message
+    rebuilds it from the saved chat. For when the saved chat changed
+    under it: a message edited (a new branch), a branch switched, a reply
+    regenerated, the chat deleted.
+    """
+    global _bound_chat_id
+    _stashed_sessions.pop(chat_id, None)
+    if _bound_chat_id == chat_id:
+        _bound_chat_id = None
+
+
+def compact_conversation(force: bool = False, incoming_text: str = "", incoming_images: int = 0,
+                         drop_trailing_user: bool = False):
+    """
+    Replace the older part of the current conversation with a summary,
+    when it has grown past its budget (or always, with `force`). Returns
+    the ai.compaction.CompactionResult, or None when nothing was done.
+    Never raises: a failed summary leaves the conversation untouched.
+    """
+    global chat
+    from ai import compaction
+    if chat is None:
+        return None
+    provider = get_active_provider()
+    incoming = compaction.estimate_tokens(incoming_text) + incoming_images * compaction.IMAGE_TOKENS
+    if not force and not compaction.should_compact(chat, provider, incoming):
+        return None
+    try:
+        new_session, result = compaction.compact_session(
+            chat, provider, get_active_model(), tools, str(_render_instructions(load_instructions())),
+            assistant=get_assistant_name(), force=force, drop_trailing_user=drop_trailing_user,
+        )
+    except Exception as e:
+        print(f"[compaction] Couldn't summarise the conversation, continuing without: {e}")
+        return None
+    if result is None:
+        return None
+    chat = new_session
+    return result
+
+
+def _pending_image_count() -> int:
+    return (1 if screenshot is not None else 0) + len(_pending_chat_images)
+
+
+# ══════════════════════════════════════════════════════════════════
 # REFRESH - reload actions module and rebuild chat
 # ══════════════════════════════════════════════════════════════════
 
@@ -1557,7 +1855,7 @@ def refresh_actions():
 
     import ai.providers as providers
     try:
-        chat = providers.create_chat_session(get_active_provider(), get_active_model(), tools, str(system_instructions))
+        chat = _rebuilt_session(str(system_instructions))
     except providers.ProviderClientError as e:
         # No key, no network, a bad model id. The macro is registered
         # and usable either way; only talking to the model is affected,
@@ -1643,26 +1941,57 @@ y is vertical (0=top, 1000=bottom), x is horizontal (0=left, 1000=right).
         # Convert normalized 0-1000 coords to real pixels using pyautogui's
         # OWN reported screen size - NOT the screenshot's pixel dimensions.
         # On Windows with display scaling (125%/150%, very common), a
-        # screenshot is captured at the physical pixel resolution while
-        # pyautogui.moveTo()/click() operate in the logical coordinate space
-        # Windows reports for the mouse. Those two can differ, which used to
-        # make every vision click land at the wrong spot on a scaled display
-        # even when the model correctly identified the target.
+        # screenshot can be captured at a different resolution from the
+        # coordinate space the mouse and the window functions use, the one
+        # the click is made in (ai/direct_input.py). Those two used to
+        # differ, which made every vision click land at the wrong spot on
+        # a scaled display even when the model correctly identified the
+        # target.
         screen_w, screen_h = pyautogui.size()
         real_x = int((x_norm / 1000) * screen_w)
         real_y = int((y_norm / 1000) * screen_h)
 
         print(f"[vision] Found {target!r} at ({real_x}, {real_y}) "
               f"[screenshot {screen.width}x{screen.height}, pyautogui screen {screen_w}x{screen_h}]")
-        pyautogui.moveTo(real_x, real_y, duration=0.3)
-        pyautogui.click(button=button)
+        # What is actually under that point, by name, so the result says
+        # which control was clicked and not only where.
+        try:
+            from ai.discovery import screen_map
+            hit = screen_map.control_at(real_x, real_y)
+        except Exception:
+            hit = None
+        # Pressed through the app itself, not with the user's mouse,
+        # whenever the app allows it (ai/direct_input.py).
+        from ai import direct_input
+        # The screenshot was taken just now. If Kestrel's own window is at
+        # that point, the model picked something on Kestrel, and a click
+        # there would go to an app beneath it that it never saw.
+        if direct_input.kestrel_window_at(real_x, real_y):
+            # Worded like the other refusals below: a generalized macro
+            # stops on "Could not click" (ai/actions.py).
+            return (
+                f"Could not click {target} at ({real_x}, {real_y}): Kestrel's own window is there, "
+                "not the app. If it covers the app, ask the user to move or minimize it."
+            )
+        outcome = direct_input.click(real_x, real_y, button=button)
+        if outcome.stopped:
+            return actions._check_emergency_stop() or "Stopped: automation is stopped."
+        if not outcome.done:
+            return (
+                f"Could not click {target} at ({real_x}, {real_y}): {outcome.note}. "
+                "Tell the user, or reach it another way."
+            )
         actions.actions_list.append(
             ("right_click", real_x, real_y) if button == "right" else ("click", real_x, real_y)
         )
         result = f"{'Right-c' if button == 'right' else 'C'}licked {target} at ({real_x}, {real_y})"
+        if hit is not None:
+            result += f" - the control there was {hit.label()}"
+        if outcome.how == "disabled":
+            result += f" - but {outcome.note}"
 
-        # Self-verification: pyautogui.click() never raises just because a
-        # click landed on empty space, hit the wrong element, or the app
+        # Self-verification: a click never fails just because it
+        # landed on empty space, hit the wrong element, or the app
         # simply didn't respond - it "succeeds" identically either way.
         # THAT'S the actual gap that makes a missed click look identical to
         # a real one to the model: not an exception being swallowed (this
@@ -1791,6 +2120,33 @@ def pop_pending_file_outputs() -> list[dict]:
     return entries
 
 
+# Web pages the assistant looked at this turn, for the "Sources" card the
+# chat shows under the reply, the way chat assistants list what they read.
+_pending_sources: list = []
+
+
+def queue_sources(entries: "list[dict]", kind: str = "read") -> None:
+    """entries: [{"url", "title"}]; kind "read" for pages opened,
+    "found" for search results only listed."""
+    for entry in entries:
+        url = (entry.get("url") or "").strip()
+        if url:
+            _pending_sources.append({"url": url, "title": (entry.get("title") or "").strip(), "kind": kind})
+
+
+def pop_pending_sources() -> "list[dict]":
+    """This turn's sources, each URL once (the first time it came up),
+    pages read before search results."""
+    global _pending_sources
+    entries, _pending_sources = _pending_sources, []
+    seen, unique = set(), []
+    for entry in sorted(entries, key=lambda e: 0 if e["kind"] == "read" else 1):
+        if entry["url"] not in seen:
+            seen.add(entry["url"])
+            unique.append(entry)
+    return unique
+
+
 # ══════════════════════════════════════════════════════════════════
 # SCREENSHOT HOTKEY
 # ══════════════════════════════════════════════════════════════════
@@ -1849,7 +2205,12 @@ def trigger_screenshot(mark_pending: bool = True) -> str:
     global screenshot, _pending_screenshot_path
     print("Taking Screenshot...")
     screenshot = ImageGrab.grab()
-    play_notification_sound("screenshot")
+    # A capture sound says "your screen was just captured", which is worth
+    # hearing from the shortcut or from the assistant looking in chat. An
+    # autonomous run looks at the screen every step and is already visibly
+    # driving it; a shutter on each look would be noise.
+    if not _autonomous_run_active:
+        play_notification_sound("screenshot")
     try:
         os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
         path = os.path.join(SCREENSHOTS_DIR, f"screenshot_{int(time.time() * 1000)}.png")
@@ -2053,7 +2414,56 @@ def _build_message_contenu(input_text: str, audio_bytes: "bytes | None") -> list
     return contenu
 
 
-def ai(input_text: str = "", audio_bytes: bytes = None) -> str:
+def _compact_command_reply(result) -> str:
+    """The status line a /compact request gets instead of a reply. A
+    [[SYSTEM:...]] marker: shown as a small note, never read back to the
+    model as something it said (app/chat_context.py)."""
+    if result is None or (result.summarized_turns == 0 and result.tokens_after >= result.tokens_before):
+        return "[[SYSTEM:compress|Nothing to compact yet: the conversation is still short.]]"
+    if result.summarized_turns == 0:
+        return (
+            f"[[SYSTEM:compress|Nothing old enough to summarise yet. Old screenshots and tool output "
+            f"were dropped: about {result.tokens_before:,} tokens down to {result.tokens_after:,}.]]"
+        )
+    return (
+        f"[[SYSTEM:compress|Conversation compacted: {result.summarized_turns} earlier message"
+        f"{'s' if result.summarized_turns != 1 else ''} summarised, about "
+        f"{result.tokens_before:,} tokens down to {result.tokens_after:,}.]]"
+    )
+
+
+def _run_compact_command(on_compacted) -> str:
+    """/compact: summarise now, whatever the size. The reply is the note;
+    on_compacted still gets the result, so the summary is kept with the
+    chat (result.requested tells it not to add a second note)."""
+    result = compact_conversation(force=True)
+    if result is not None:
+        result.requested = True
+        if on_compacted is not None:
+            try:
+                on_compacted(result)
+            except Exception as e:
+                log_debug(f"[compaction] on_compacted callback failed: {e}")
+    return _compact_command_reply(result)
+
+
+def _before_send(input_text: str, on_compacted) -> None:
+    """Compact first if this message would take the conversation past its
+    budget. on_compacted(result) lets the chat say that it happened.
+
+    A new request also lets typing go ahead that the last one held back
+    (ai/direct_input.py's new_turn)."""
+    from ai import direct_input
+    direct_input.new_turn()
+    result = compact_conversation(incoming_text=input_text, incoming_images=_pending_image_count())
+    if result is not None and on_compacted is not None:
+        try:
+            on_compacted(result)
+        except Exception as e:
+            log_debug(f"[compaction] on_compacted callback failed: {e}")
+
+
+def ai(input_text: str = "", audio_bytes: bytes = None, on_compacted=None) -> str:
     """
     Send a message to the AI and get a response.
     `input_text` and/or `audio_bytes` (WAV bytes, e.g. from the chat's mic
@@ -2070,7 +2480,7 @@ def ai(input_text: str = "", audio_bytes: bytes = None) -> str:
     # deleted, say). No-op unless something actually changed.
     _ensure_chat_session_fresh()
     print("Handling Input...")
-    actions.emergency_stop = False
+    _clear_stop_for_new_message()
 
     if chat is None:
         provider = get_active_provider()
@@ -2080,16 +2490,32 @@ def ai(input_text: str = "", audio_bytes: bytes = None) -> str:
             "then try again."
         )
 
+    from ai import compaction
+    if compaction.is_compact_command(input_text) and audio_bytes is None:
+        return _run_compact_command(on_compacted)
+
+    _before_send(input_text, on_compacted)
     contenu = _build_message_contenu(input_text, audio_bytes)
     if not contenu:
         return "I didn't receive anything to process."
 
-    try:
-        response = chat.send_message(contenu)
-        full_text = response.text or ""
-    except Exception as e:
-        print(f"[ia] {get_active_provider()} error: {e}")
-        return f"Error: {e}"
+    for attempt in (1, 2):
+        try:
+            response = chat.send_message(contenu)
+            full_text = response.text or ""
+            break
+        except Exception as e:
+            if attempt == 1 and compaction.is_context_overflow(e):
+                # Too long for the model after all (the estimate is only
+                # an estimate): summarise, then try once more.
+                print(f"[ia] The conversation is too long for the model ({e}); compacting and retrying.")
+                result = compact_conversation(force=True, drop_trailing_user=True)
+                if result is not None:
+                    if on_compacted is not None:
+                        on_compacted(result)
+                    continue
+            print(f"[ia] {get_active_provider()} error: {e}")
+            return f"Error: {e}"
 
     return _process_full_response(full_text)
 
@@ -2169,7 +2595,8 @@ class _StreamMarkerFilter:
             self._on_visible(text)
 
 
-def ai_stream(input_text: str = "", on_delta=None, audio_bytes: bytes = None, on_thinking_delta=None) -> str:
+def ai_stream(input_text: str = "", on_delta=None, audio_bytes: bytes = None, on_thinking_delta=None,
+              on_compacted=None) -> str:
     """
     Streaming counterpart to ai() - same inputs, same
     [[UPDATE_START]]/[[AUTONOMOUS_SUGGEST]] post-processing, and the
@@ -2207,7 +2634,7 @@ def ai_stream(input_text: str = "", on_delta=None, audio_bytes: bytes = None, on
     _ensure_initialized()
     _ensure_chat_session_fresh()          # see the non-streaming path
     print("Handling Input (streaming)...")
-    actions.emergency_stop = False
+    _clear_stop_for_new_message()
 
     if chat is None:
         provider = get_active_provider()
@@ -2217,18 +2644,40 @@ def ai_stream(input_text: str = "", on_delta=None, audio_bytes: bytes = None, on
             "then try again."
         )
 
+    from ai import compaction
+    if compaction.is_compact_command(input_text) and audio_bytes is None:
+        return _run_compact_command(on_compacted)
+
+    _before_send(input_text, on_compacted)
     contenu = _build_message_contenu(input_text, audio_bytes)
     if not contenu:
         return "I didn't receive anything to process."
 
-    marker_filter = _StreamMarkerFilter(on_delta or (lambda _text: None))
-    try:
-        response = chat.send_message_stream(contenu, marker_filter.feed, on_thinking_delta)
-        marker_filter.finalize()
-        full_text = response.text or ""
-    except Exception as e:
-        print(f"[ia] {get_active_provider()} error: {e}")
-        return f"Error: {e}"
+    for attempt in (1, 2):
+        marker_filter = _StreamMarkerFilter(on_delta or (lambda _text: None))
+        streamed = []
+
+        def _feed(piece: str, _filter=marker_filter, _streamed=streamed) -> None:
+            _streamed.append(piece)
+            _filter.feed(piece)
+
+        try:
+            response = chat.send_message_stream(contenu, _feed, on_thinking_delta)
+            marker_filter.finalize()
+            full_text = response.text or ""
+            break
+        except Exception as e:
+            # Retried only if nothing was shown yet: a reply that already
+            # started streaming can't be taken back.
+            if attempt == 1 and not streamed and compaction.is_context_overflow(e):
+                print(f"[ia] The conversation is too long for the model ({e}); compacting and retrying.")
+                result = compact_conversation(force=True, drop_trailing_user=True)
+                if result is not None:
+                    if on_compacted is not None:
+                        on_compacted(result)
+                    continue
+            print(f"[ia] {get_active_provider()} error: {e}")
+            return f"Error: {e}"
 
     return _process_full_response(full_text)
 
@@ -2346,6 +2795,15 @@ def _retry_send_message_after_network_error(chat, prompt, screen, on_network_ret
     return None
 
 
+def _clear_stop_for_new_message() -> None:
+    """A new chat message is the go-ahead after a stop, except while a
+    mapping run or a macro is still winding down from one: it would carry
+    on (ai/automation_lock.py)."""
+    from ai import automation_lock
+    if not automation_lock.running():
+        actions.emergency_stop = False
+
+
 def run_autonomous_mode(
     goal: str,
     max_steps: int | None = None,
@@ -2357,7 +2815,6 @@ def run_autonomous_mode(
     Takes a screenshot before each step, sends it to Gemini,
     and executes whatever tool it calls. Repeats until:
       - tool_name_action is called (goal complete, macro saved)
-      - actions.single_fcn is set (simple action done)
       - 3 consecutive steps produce no tool call and no text reply
         (the model isn't acting - no point burning through the rest)
       - the PyAutoGUI fail-safe triggers, or the stop shortcut/emergency
@@ -2394,6 +2851,8 @@ def run_autonomous_mode(
     early/forced stop, so the outcome is noticeable even if Kestrel isn't
     in the foreground.
     """
+    global _autonomous_run_active
+    run_started_at = time.monotonic()
     _ensure_initialized()
     if max_steps is None:
         max_steps = get_max_automation_steps()
@@ -2404,7 +2863,16 @@ def run_autonomous_mode(
     actions.human_handoff_requested = False
     actions.human_handoff_reason = None
     actions.human_handoff_event.clear()
+    # Left over from the chat: opening an app there sets single_fcn, and a
+    # run that started with it set ended after its first step as
+    # "Single action completed".
+    actions.single_fcn = False
+    actions.fcn_name = False
     reset_safety_limits()  # fresh per-tier action budget for this run
+    # Typing goes to the windows this run clicks, not one left from
+    # before (ai/direct_input.py).
+    from ai import direct_input
+    direct_input.forget_target()
 
     # Load autonomous-specific instructions
     auto_instructions = _render_instructions(load_file(AUTO_INSTRUCTIONS_PATH))
@@ -2421,6 +2889,10 @@ def run_autonomous_mode(
         }
     )
 
+    # What the run looks at, kept so the chat can show it afterwards.
+    from ai.run_screenshots import RunScreenshots
+    run_shots = RunScreenshots(RUN_SCREENSHOTS_DIR).start()
+
     consecutive_empty_steps = 0
     outcome = "max_steps"  # overwritten by whichever branch actually ends the run
     # How many steps actually ran, for the summary. Not `step`: that is
@@ -2428,6 +2900,7 @@ def run_autonomous_mode(
     # after a normal exit it is the last INDEX rather than a count.
     step_count = 0
 
+    _autonomous_run_active = True
     try:
         for step in range(max_steps):
             step_count = step + 1
@@ -2463,6 +2936,7 @@ def run_autonomous_mode(
 
             # Capture current screen state
             screen = ImageGrab.grab()
+            run_shots.save(step + 1, screen)
             screen_for_model = prepare_autonomous_screenshot(screen)
 
             # count_tokens() is a free, no-generation API call (not billed
@@ -2486,6 +2960,18 @@ def run_autonomous_mode(
                 f"Call exactly ONE tool to make progress toward the goal.\n"
                 f"If the goal is fully complete and visible on screen, call tool_name_action."
             )
+            # The same screen by name: which control is which, and what
+            # changed since the last step, including a different control
+            # now at a place where another one was. See
+            # ai/discovery/screen_map.py.
+            try:
+                from ai.discovery import screen_map
+                controls = screen_map.describe()
+            except Exception as e:
+                log_debug(f"[autonomous] screen map skipped: {e}")
+                controls = ""
+            if controls:
+                prompt += "\n\n" + controls
 
             try:
                 response = auto_chat.send_message([prompt, screen_for_model])
@@ -2545,6 +3031,7 @@ def run_autonomous_mode(
             # And again for file cards - a file the AI writes mid-automation
             # isn't something a live chat should sprout a card for later.
             pop_pending_file_outputs()
+            pop_pending_sources()
 
             # Tier 2 hand-off: the model recognized a CAPTCHA/MFA/verification
             # challenge and asked a human to take it from here instead of
@@ -2595,13 +3082,11 @@ def run_autonomous_mode(
                 outcome = "success"
                 break
 
-            # Check if a single action completed the task
-            if actions.single_fcn:
-                print("\n[autonomous] Single action completed.")
-                actions.single_fcn = False
-                _defer_post_run_work(None)     # nothing to generalize
-                outcome = "success"
-                break
+            # A one-step tool (opening an app, typing, a wait) doesn't end a
+            # run: the goal usually needs more, and the model says when it
+            # is reached (tool_name_action, above). This flag used to end
+            # the run after the first step that opened an app.
+            actions.single_fcn = False
 
             # Neither of the above fired - a tool call may still have happened
             # (most tools don't set fcn_name/single_fcn), so this isn't
@@ -2652,9 +3137,20 @@ def run_autonomous_mode(
         pop_pending_screenshot_path()
         pop_pending_terminal_output()  # same leftover-leak risk, same fix
         pop_pending_file_outputs()  # same leftover-leak risk, same fix
+        pop_pending_sources()       # same again
+        _autonomous_run_active = False
+        run_folder, run_shot_count = run_shots.finish()
 
-    play_notification_sound("automation_finished" if outcome == "success" else "automation_stopped")
-    return _describe_outcome(outcome, step_count, max_steps)
+    # One sound per run. A run ended by the stop shortcut already played
+    # the stop sound the moment the shortcut was pressed (stop_automation_now),
+    # often seconds before the run noticed and wound down.
+    if outcome == "success":
+        play_notification_sound("automation_finished")
+    elif _stop_sound_played_at < run_started_at:
+        play_notification_sound("automation_stopped")
+    result = _describe_outcome(outcome, step_count, max_steps)
+    result["screenshots_dir"], result["screenshot_count"] = run_folder, run_shot_count
+    return result
 
 
 def _describe_outcome(outcome: str, steps_used: int, max_steps: int) -> dict:
@@ -3256,13 +3752,12 @@ def listen_mic():
     with sr.Microphone() as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.5)
         print("\n Listening...")
-        if winsound is not None:
-            winsound.Beep(800, 150)
+        # Waits for the sound to finish, so the mic doesn't hear it.
+        play_notification_sound("listen_start", wait=True)
 
         try:
             audio = recognizer.listen(source, timeout=7, phrase_time_limit=25)
-            if winsound is not None:
-                winsound.Beep(600, 150)
+            play_notification_sound("listen_end")
         except sr.WaitTimeoutError:
             return None, None
 

@@ -1,9 +1,322 @@
 # Features
 
-Everything Kestrel can do, by area. This is a list of capabilities, not
-a release history: there are no dates, no version sections and no bug
-fixes here. If you want to know what the app does, read this. If you
-want to know what changed between two builds, read the commit log.
+Everything Kestrel can do, by area. The first section, Latest changes,
+is what changed most recently, fixes included. Everything after it is a
+list of capabilities, not a release history: no dates, no version
+sections and no bug fixes. For older changes, read the commit log.
+
+---
+
+## Latest changes
+
+### Your mouse
+
+- **The AI no longer takes over your mouse.** Its clicks, from the
+  chat, autonomous runs, macros and mapping, go to the control itself
+  through Windows UI Automation: a button is pressed, a checkbox ticked,
+  a tab, radio button or list item selected, a menu or a list opened, a
+  text field focused. A classic Windows control with nothing like that
+  gets the click as a window message. The pointer stays where you left
+  it, and moving it while the AI works no longer sends the next click
+  somewhere else. `ai/direct_input.py`.
+- **Typing goes to the window the AI clicked**, the app it opened, or
+  a window its own keys brought up (Win+R's Run box, a new window from
+  Ctrl+N), not to whatever you are using. A dialog that window opens
+  counts as that window. Into a standard Windows text box the text goes
+  straight in, even with the window in the background. Elsewhere, and
+  for key combinations such as Ctrl+T, the window is brought to the
+  front first, once you pause typing or moving the mouse, and never
+  from another virtual desktop; if it can't be, nothing is typed. When
+  that window closes, keys go to the window it belonged to, or to the
+  app its last key started, or wait for the AI's next click, never into
+  whatever happens to be in front. A new window that may be yours (it
+  came up while you were using the computer) isn't typed into either.
+  With no window clicked yet, nothing goes into Kestrel's own chat box:
+  the AI is told to click the field first.
+- **No Delete outside a text field.** Typing ends with a Delete that
+  clears an address bar's suggestion. It is now pressed only when the
+  focus is in a text field: in a file list it would have sent the
+  selected file to the Recycle Bin.
+- **Typing stops when you take over.** Before every key, the window it
+  started in has to still be the one in front. Click into another window
+  halfway through, or let a dialog pop up, and typing stops there: Enter
+  isn't pressed after half a command, the AI is told what happened, and
+  a macro stops at that step.
+- **When nothing else reaches a control** (a web page element with no
+  role, a custom-drawn control, a game), Kestrel moves the mouse, clicks
+  and puts it back where it was. Not while you hold a mouse button or
+  Ctrl, Shift or Alt, which would drop what you are dragging or make it
+  a Ctrl+click, and not until you pause typing or moving the mouse.
+  **Settings > Mouse** turns this off: those clicks are then skipped, a
+  macro stops there, and the AI is told why.
+- **One press, never two.** A button that opens a dialog can keep its
+  app from answering until the dialog closes; the run goes on, and the
+  press isn't repeated another way. Neither is one the app reported an
+  error for, since it may have happened anyway.
+- **The corner fail-safe still works**: the pointer in a corner of the
+  main screen stops automation before the next action, mapping runs
+  included, which it never reached before. Now that you can use the
+  mouse during a run, don't leave it resting in a corner.
+- **Accented text is typed, not pasted.** Typing was meant to send each
+  character by code point, but the input structure was 8 bytes short of
+  what 64-bit Windows expects, Windows refused every call, and every
+  accented character went through your clipboard instead.
+- **Enter is let go.** The type-and-Enter and Enter tools pressed Enter
+  and never released it.
+- **A mapped control's fallback click on two screens** landed at half
+  its position: the conversion compared the whole desktop with the main
+  screen.
+- **Kestrel's own border no longer blocks clicks.** Windows reports the
+  purple working border, and Kestrel's other see-through panels, at
+  every point they cover, so every click was taken as aimed at Kestrel
+  and refused. Clicks now go through them to the window underneath. A
+  click the AI aims from a screenshot that shows Kestrel's own window at
+  that spot is refused instead: the app under it can't be seen there.
+- **Keys and shortcuts.** `tool_press_keys` presses one key or a
+  combination (Escape, Tab, Ctrl+A, Win+R, Alt+Tab) in the window the AI
+  works in. Combinations that close a window or delete for good (Alt+F4,
+  Ctrl+W, Shift+Delete) ask you first, however they are written. Steps
+  you spell out ("press Win+R,
+  type notepad, press Enter") are taken as given instead of being
+  replaced by a shortcut.
+- **An autonomous run no longer ends after its first step** when the
+  chat had just opened an app: a flag the chat left set read as "done".
+
+### Installer
+
+- **A native installer.** Setup is now a small Windows program written
+  in C (`installer/setup`, built by `installer/build_installer.py`).
+  It installs per user with no administrator rights, shows the licence,
+  the options and the progress in the app's own look, and handles high
+  DPI and the keyboard. The Inno Setup script is kept as a fallback.
+- **Safe updates.** An update is unpacked next to the installed version
+  and swapped in, so a failed or canceled update leaves the old one
+  exactly as it was. Running the same version again offers a reinstall.
+  A running Kestrel is asked to close first, and an install made by the
+  old Inno Setup installer is replaced cleanly.
+- **Uninstall removes everything**, the uninstaller included, and asks
+  before deleting chats and settings.
+- **Unattended installs**: `/S`, `/D=<folder>`, `--desktop-shortcut=0|1`,
+  `--startup=0|1`, `--launch` and `--force-close`, and `/S --delete-data`
+  for the uninstaller.
+- **One setup window at a time.** Starting setup again brings the open
+  one to the front.
+
+### Startup
+
+- **Kestrel.exe closing as its window appeared.** The installed app
+  died inside the call that first shows the window, with an access
+  violation and no message. The three things that could do that are
+  gone. Nothing hooks the window's messages any more: a second launch
+  and the installer reach the running app through named Windows objects
+  a background thread waits on. Kestrel.exe loads the newest Microsoft
+  C++ runtime on the machine before Qt, so Qt and any DLL injected into
+  the window never run on an older copy than they were built for. And
+  its manifest is back to the standard one, with DPI awareness left to
+  Qt and no process-wide UTF-8 code page. The installer no longer waits
+  9 seconds for an app that isn't listening before offering to end it.
+- **Faster first window.** The splash screen no longer stays up for a
+  fixed 2.6 seconds. AppOpener, pyautogui, the Gemini SDK and the audio
+  stack load after the window is up, in the background, instead of
+  before it. The Console logs how long startup took.
+- **No console windows, at launch or after.** Kestrel.exe has no console
+  of its own, so every console program it starts (cmd.exe, PowerShell,
+  `ver`) gets a window, and these flashed on screen at launch and again
+  once the app was up: AppOpener runs cmd.exe on import and a string of
+  commands when its app list query fails, and Python runs `ver` the
+  first time anything asks which Windows this is. Now nothing Kestrel
+  starts opens a console window, whichever library starts it, unless it
+  asks for one: opening Command Prompt or PowerShell from the chat still
+  shows it. A tool you add can ask for one too (README, Adding Your Own
+  Tools).
+- **One Kestrel at a time.** Launching it again brings up the running
+  one instead of starting a second copy, which doubled every hotkey and
+  sound. The running one confirms it has shown its window. If it is
+  still closing (or has just crashed), the new launch waits for it to be
+  gone and starts normally; if it never answers, the new launch says so
+  instead of closing without a word.
+- **Failures leave a trace.** `%LOCALAPPDATA%\Kestrel\logs` holds
+  `crash.log` (uncaught errors, Qt aborts, native crashes) and
+  `kestrel.log` (everything the current run logged; the run before is
+  kept as `kestrel.previous.log`). An error at startup is shown with the
+  file's path, and an error inside one button or menu is logged instead
+  of closing the whole app, which is what PyQt does by default. When a
+  run ends without closing normally, the next launch writes down how far
+  it got, its last log lines, and what Windows recorded about the crash,
+  including the DLL it happened in.
+
+### Chat
+
+- **Long conversations are compacted**, the way Claude does it. Near the
+  model's context budget, the older part is summarised by the model and
+  the conversation carries on from the summary plus the recent
+  messages. `/compact` does it on demand, and a request the provider
+  rejects as too long is compacted and retried once. The summary is
+  saved with the chat, marked in the transcript and readable from View
+  summary.
+- **Each chat is its own conversation for the model.** Switching chats
+  used to keep talking to the same history, and a chat reopened after a
+  restart had no context. A macro saved or deleted mid-chat no longer
+  wipes it either.
+- **Screenshots you can see.** Larger previews with a caption saying who
+  took them. A click opens the screenshot inside the Kestrel window, over
+  the page and sized to show all of it, instead of in a window of its
+  own. Zoom, fit, copy, open in your image viewer, show in folder, the
+  arrow keys between images, and Esc or the X to go back.
+- **An autonomous run's screens are kept.** Each step's screenshot is
+  saved in a folder for the run and shown as a strip in the chat when it
+  ends. Runs beyond the newest 40, or older than 30 days, are deleted.
+- **Images you send stay with the message**, shown above it, also after
+  a reload.
+- **Sources.** The pages an answer drew on are listed in a card above
+  it.
+
+### Web
+
+- **The assistant reads the web itself**, like ChatGPT or Claude:
+  searching, reading a page and crawling a site all happen directly,
+  without the browser, autonomous mode or a macro. The prompt now sends
+  lookups there and keeps autonomous mode for doing things on screen. A
+  run that did nothing on screen no longer saves an empty macro.
+- **Pages built with JavaScript** are read in an off-screen browser
+  (Edge or Chrome, headless, with a throwaway profile) instead of coming
+  back empty.
+- **It says who it is.** Requests identify as `Kestrel-User`, the way
+  ChatGPT-User and Claude-User do, instead of as Chrome.
+- **Crawls follow the site's rules**: its `robots.txt` rules for
+  Kestrel-User and its Crawl-delay. A `robots.txt` that answers with a
+  server error means "not now".
+- **No CAPTCHA bypass.** A CAPTCHA, a Cloudflare or other bot check, or
+  HTTP 429 stops the read and the rest of a crawl, and the answer says
+  so. Nothing tries to solve, dodge or wait out a check; the way past
+  one is you, in your own browser. DuckDuckGo's human check is reported
+  the same way instead of as "no results".
+- **Installed prompts update.** The prompt an install copies on its
+  first run now follows the installed version and keeps the preferences
+  learned on that machine. The file it replaces is kept as
+  `instructions.previous.txt`.
+
+### Screen and mapping
+
+- **Names and coordinates for what is on screen.** Every screenshot the
+  assistant takes, and every autonomous step, comes with the controls
+  of the window in front, read from Windows UI Automation: name, type,
+  screen position, and what changed since the last screenshot,
+  including a different control at the same coordinates.
+  `tool_check_control_at` checks one point before a click.
+- **The mapping overlay is a tree.** Screens nest under the control
+  that opens them. Hovering a control shows its name, centre, box and
+  screen, and outlines it on screen. The overlay stays open when mapping
+  ends, and the assistant gets the same tree as text.
+- **The same map on the Mapping page**, live: the screens, their
+  controls and buttons, the counts and the clock, with the same outline
+  on hover. Opened halfway through a run, or after one started from the
+  chat, the page shows what it missed.
+- **Stop a run, hide the overlay.** The Mapping page has a Stop button
+  for any mapping run, the chat's included, and the run keeps what it
+  mapped. A switch there hides the overlay now and for the next runs.
+  Esc doesn't stop a mapping run, not even inside an autonomous run: the
+  mapper presses Esc itself to close menus, and the run would stop
+  itself at the first one. When a run ends, the panel stops letting
+  clicks through on the Windows side too, not only in Qt, so its X
+  always works.
+- **The right window is mapped.** The window is picked by its program
+  (notepad.exe for "notepad"), then its title. Its window class no
+  longer counts, which let a short name like "code" map whichever window
+  came first. Kestrel's own window, the taskbar, the desktop and windows
+  on another virtual desktop are never mapped, and when nothing matches,
+  the message lists the open windows.
+- **More is never pressed while mapping**: send, post, reply, pay, buy,
+  submit, call, accept, decline, install, like, follow, log out and
+  "Don't save", in English, French, Spanish, Portuguese, German, Italian,
+  Arabic, Hindi, Chinese, Japanese and Korean. Matched as whole words,
+  so "Postal code" isn't taken for "post".
+- **Nothing you typed is overwritten.** Mapping types its test value
+  only into empty one-line fields it can read. Drop-down lists, number
+  boxes and password boxes, where typing would pick an item or change a
+  setting, are left alone.
+- **The window is put back.** Mapping maximizes the app's window to
+  start; when the run ends, however it ends, the window is restored, or
+  minimized again if it was.
+- **Mapped controls are pressed by name.** `tool_use_mapped_control`
+  takes the app and a control's name from the map and finds the control
+  in the window as it is now. Mapping used to add one AI tool per
+  control, hundreds for one app, each falling back to clicking where the
+  control was when the map was made, whatever was there now. A control
+  that isn't on screen now isn't pressed: the AI is told which screen
+  has it and what opens that screen. The name has to be the whole name
+  ("Save" doesn't press "AutoSave"), a minimized app is shown first, and
+  destructive controls ask you first.
+- **Maps that stopped short aren't reused.** A saved map replaces
+  mapping again only when its run finished, and a run that is stopped or
+  hits a limit no longer replaces a finished map. Maps saved by earlier
+  versions are mapped once more.
+- **The Mapping page.** Start always maps afresh and doesn't count
+  against the AI's action budget. The outcome is one line, in red when
+  the run couldn't start or failed, instead of the text written for the
+  AI. Saved maps can be shown again or deleted. A control behind
+  Kestrel's window isn't outlined on top of it. Kestrel comes back to the
+  front when a run started there ends. The overlay gives the stop
+  shortcut while a run goes.
+- **One automation at a time.** An AI run, a macro started from the
+  Macros page and a mapping run no longer run together: the second is
+  refused and told which is running. Starting a mapping run no longer
+  clears a stop meant for another run.
+
+### Sounds
+
+- **New sounds**, generated by `tools/make_sounds.py`, played without
+  freezing the window or cutting off Read aloud. A WAV dropped into
+  `assets/sounds` with the same name replaces one.
+- **Each event plays once.** A held shortcut no longer repeats (the
+  screenshot shortcut played twice), the stop shortcut's sound is not
+  played again when the run winds down, and a stopped macro no longer
+  also plays "finished".
+- **A Sounds switch** in Settings.
+
+### Window
+
+- **The window drawn twice after Alt+Tab**, a smaller copy of the whole
+  app over the top-left of the real one. Qt was drawing at 100% in a
+  window Windows had at 125%. The uiautomation package sets the process
+  to per-monitor v1 DPI awareness when it loads, and the Mapping page's
+  imports loaded it before Qt could set per-monitor v2, the mode Qt is
+  built for: the startup log said "DPI awareness per-monitor". Kestrel
+  now sets v2 first thing, and uiautomation no longer loads at startup,
+  which also takes it off the startup time. If Qt and Windows still
+  disagree about the scale, the window is redrawn at the right one when
+  you come back to it, and the log says it happened.
+
+### Look
+
+- **New icons.** 51 icons drawn for Kestrel as SVG and tinted to the
+  theme. The qtawesome dependency is gone.
+- **The purple logo everywhere**: app icon, taskbar, window, chat,
+  installer and website favicon, and in the tray, dimmed while working.
+- **Menus in the app's colours.** A chat's right-click menu follows the
+  theme, like the tray menu, instead of the OS style.
+- **Macros page filter bar.** The search box and the filter dropdown are
+  the same height, with the same space above and below them.
+
+### Fixes
+
+- **No dark box behind text** in the delete-profile, delete-chat and
+  rename-chat dialogs and on cards: a stylesheet with no selector
+  painted every label in the window's background colour.
+- **Esc stops a run again.** Binding it failed on a missing import and
+  the error was only logged. A second missing import sat in the window's
+  corner-rounding fallback.
+- **Regenerate** re-asks the right message when a screenshot or other
+  card sits between the question and the reply.
+- **Cards stay above a streamed reply.** With streaming on, a card that
+  came with a reply (a screenshot, terminal output, a file) was shown
+  below it, in a different order than after a reload, and took the
+  reply's Regenerate button until the chat was reloaded.
+- **Default preferences.** "likes coffee" was removed from the
+  preferences shipped in `ai/instructions.txt`.
+- **No crash at the next mapping run after a language change.**
+  Changing the language rebuilds every page, and the old Mapping page
+  stayed subscribed to mapping runs after it was deleted.
 
 ---
 
@@ -35,15 +348,26 @@ want to know what changed between two builds, read the commit log.
 - **Attachments.** Drag a file onto the composer or use the paperclip.
   Text, code, config, CSV, PDF, Word, Excel and images all attach as
   removable chips. Several files can ride on one message; each is capped
-  at 20,000 characters with a visible truncation marker.
+  at 20,000 characters with a visible truncation marker. Images stay
+  with the message they were sent with, shown above it.
 - **Screenshots into the chat.** A global shortcut captures the screen
   and stages it as a chip so you can look at it before sending. It does
   not steal focus from whatever you were in.
-- **Screenshots the assistant takes** land in the transcript as
-  thumbnails, saved like any other message.
+- **Screenshots in the transcript**, the assistant's and yours, at a
+  readable size with a caption saying who took them. A click opens the
+  whole screenshot inside the window, with zoom, copy and show in
+  folder, and the arrow keys step between images.
 - **Learned preferences.** The assistant can record something it has
   learned about you, appended to a running list. Where two conflict, the
   most recent wins.
+- **One conversation per chat.** Each chat keeps its own context for the
+  model, including after a restart.
+- **Compaction.** A conversation nearing the model's context budget has
+  its older part summarised by the model, and carries on from the
+  summary plus the recent messages. `/compact` does it on demand. The
+  summary is saved with the chat and readable from the transcript.
+- **Sources.** Web pages an answer drew on are listed in a card above
+  it.
 - **Work mood.** Saying you are in work mode makes replies terser and
   skips small talk for the rest of that conversation. No setting, no
   persisted state.
@@ -76,13 +400,22 @@ want to know what changed between two builds, read the commit log.
 
 ## Web
 
+- **The assistant does it itself.** Searching, reading and crawling
+  happen directly, the way chat assistants read the web: no browser on
+  screen, no autonomous mode, no macro.
 - **Search.** Returns titled results with snippets and links.
 - **Reading a page.** Fetches a URL and extracts the article itself,
   headings and paragraphs, with navigation and boilerplate stripped.
-  Images worth looking at are pulled out and downscaled first.
+  Images worth looking at are pulled out and downscaled first. A page
+  that builds itself with JavaScript is read in an off-screen browser
+  (Edge or Chrome, headless, with a throwaway profile).
 - **Crawling a site.** Looks for a sitemap, falls back to following
-  links, and reads up to a page budget. It checks `robots.txt`, caps how
-  much it downloads per page, and stays on the origin it started from.
+  links, and reads up to a page budget. It follows `robots.txt` and its
+  Crawl-delay, caps how much it downloads per page, and stays on the
+  origin it started from.
+- **Honest about itself.** Requests identify as `Kestrel-User`. A
+  CAPTCHA, a bot check or a "too many requests" answer stops the read,
+  and the reply says so; nothing tries to get past one.
 - **Opening a site by name**, from chat or as a macro step.
 - **A fresh tab, not yours.** Asked to open a browser that is already
   running, it opens a new tab instead of taking over the one in front of
@@ -131,9 +464,19 @@ want to know what changed between two builds, read the commit log.
   a two-factor prompt stops the run rather than clicking through it. A
   sound plays, a card appears, and Continue resumes from a fresh
   screenshot.
+- **Names and coordinates.** Each step's screenshot comes with the
+  controls of the window in front, read from Windows UI Automation, and
+  what changed since the step before, including a different control at
+  the same coordinates.
+- **Every step's screen is kept**, in a folder per run, and shown in the
+  chat as a strip when the run ends.
 - **Text by code point.** Typing goes through the Win32 input API by
   code point rather than by keyboard layout, so accented and non-Latin
   text arrives intact.
+- **Your mouse stays yours.** Clicks go to the control through UI
+  Automation or a window message, and typing to the window the AI
+  clicked. Only an app that takes nothing but a real click gets one, with
+  the mouse put back at once, and Settings can forbid even that.
 
 ## Macros
 
@@ -162,6 +505,8 @@ want to know what changed between two builds, read the commit log.
   described element first and falls back to the recorded coordinates, so
   a small layout shift does not break it.
 - **Configurable playback delay**, 0.1 to 10 seconds.
+- **Only real recordings are saved.** A run that did nothing on screen,
+  because it only read the web for example, saves no macro.
 
 ## Block editor
 
@@ -216,24 +561,31 @@ want to know what changed between two builds, read the commit log.
   through Windows UI Automation rather than by vision, walking it as a
   bounded depth-first search with loop detection and backtracking. The
   result is a state graph saved per app.
-- **Compiled actions.** The map compiles into small parameterized click
-  and input functions for that app, registered live into the tool set
-  with no restart. At playback each one re-resolves its element by
-  accessibility path and falls back to a bounding-box click.
+- **Controls by name.** Once an app is mapped, the assistant presses a
+  control or types into a field by its name from the map
+  (`tool_use_mapped_control`). The control is found in the window as it
+  is now; one that isn't on screen isn't clicked.
 - **Context aware.** Elements are kept with the panel, dialog or tab
   they belong to, so a Save in one dialog is not confused with a Save in
   another.
 - **Destructive actions are skipped and gated.** Anything whose label
-  reads as destructive is recorded but never clicked during mapping, and
-  a compiled destructive action needs an explicit confirmation argument
-  before it will run.
-- **Saved maps are reused**, with a force-remap option for when the app
-  has genuinely changed.
-- **Progress overlay.** A small status window shows elapsed time and the
-  screens found so far. It is excluded from screen capture, so it cannot
-  end up inside an unrelated screenshot.
-- **A Mapping page** with an app name field, a Start button and the same
-  live progress, running on a background thread.
+  reads as destructive (delete, send, pay, post, log out and the like, in
+  eleven languages) is recorded but never clicked during mapping, and
+  pressing one afterwards asks you first. Only empty one-line fields get
+  the test value.
+- **Finished maps are reused**, with a force-remap option for when the
+  app has changed. A map from a run that stopped short is mapped again.
+- **The window is left as it was**: maximized for the run, then
+  restored.
+- **Map overlay.** A small window builds the map as a tree while
+  mapping runs, screens nested under the control that opens them.
+  Hovering a control shows its name, centre, box and screen and outlines
+  it on screen. It stays open when mapping ends, and the assistant gets
+  the same tree as text.
+- **A Mapping page** with an app name field, Start and Stop buttons, and
+  the same map as the overlay, built live on a background thread. A
+  switch there turns the overlay off, and saved maps can be shown again
+  or deleted.
 
 ## Models and profiles
 
@@ -274,12 +626,17 @@ want to know what changed between two builds, read the commit log.
 - **Notification sounds** for things that happen while the window is not
   in front: an automation finishing, with different tones for success
   and for stopped, a macro finishing, the wake word being heard, a voice
-  confirmation answered, and a screenshot being taken.
+  confirmation answered, the microphone opening and closing, a
+  screenshot being taken, and a step handed to you. Each event plays
+  once, and a switch in Settings turns them off.
+- **Icons drawn for Kestrel**, as SVG, tinted to the theme.
 - **Rebindable global shortcuts** for show and hide, always on top,
   screenshot and stop automation.
 - **Always on top**, from the sidebar or its shortcut.
 - **Tray icon**, with the console and quit on its menu.
-- **Right-click menus** on sidebar chats, using native OS menu styling.
+- **Right-click menus** on sidebar chats, in the app's own colours.
+- **One instance.** Launching Kestrel again brings up the running
+  window.
 - **A rounded frameless window** that still snaps, tiles and resizes
   like a normal Windows window, because the OS is still doing the
   moving.
@@ -297,7 +654,9 @@ want to know what changed between two builds, read the commit log.
 - **Per-session action limits**, 100 low, 30 medium and 5 high by
   default, with the caps and a manual reset in Settings.
 - **Destructive labels need confirmation**, separate from the
-  allow-list, including inside a compiled mapping macro.
+  allow-list, including a mapped control the assistant presses.
+- **One automation at a time.** An AI run, a macro and a mapping run
+  never click at once; the one that comes second is refused.
 - **API keys in the OS credential store**, Windows Credential Manager,
   Keychain or Secret Service, with a one-time migration of any existing
   plaintext value.
@@ -315,6 +674,9 @@ want to know what changed between two builds, read the commit log.
 
 ## Maintenance
 
+- **Installer.** A native per-user setup program with updates that
+  cannot leave a half-installed app, a complete uninstall, and a command
+  line for unattended installs.
 - **Update checking.** The app compares its version against the latest
   published release and raises a tray notification when a newer one
   exists. Check only: it does not install anything itself.

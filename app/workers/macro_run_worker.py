@@ -52,9 +52,14 @@ class MacroRunWorker(QObject):
             self.error.emit(macro_id, f"{macro_id} is not a function")
             return
 
+        from ai import automation_lock
+
         try:
             coerced = _coerce_macro_params(func, params)
-            result = func(**coerced)
+            # One automation at a time: not while an AI run or a mapping
+            # run is clicking (ai/automation_lock.py).
+            with automation_lock.hold("a macro"):
+                result = func(**coerced)
             self.finished.emit(macro_id, "" if result is None else str(result))
         except Exception as e:
             self.error.emit(macro_id, str(e))

@@ -113,18 +113,52 @@ def test_get_all_tools_only_scans_the_given_module():
 # play_actions - macro playback dispatch
 # ══════════════════════════════════════════════════════════════════
 
-def test_play_actions_dispatches_click(mock_pyautogui):
+@pytest.fixture
+def clicks(monkeypatch):
+    """direct_input.click (ai/direct_input.py, the clicks that don't take
+    the user's mouse), recorded instead of made."""
+    made = []
+
+    def fake_click(x, y, button="left"):
+        made.append((x, y, button))
+        return actions.direct_input.Outcome(True, "invoke")
+
+    monkeypatch.setattr(actions.direct_input, "click", fake_click)
+    return made
+
+
+def test_play_actions_dispatches_click(clicks, mock_pyautogui):
     actions.play_actions([("click", 100, 200)])
 
-    mock_pyautogui.moveTo.assert_called_once_with(100, 200, duration=0.2)
-    mock_pyautogui.click.assert_called_once()
+    assert clicks == [(100, 200, "left")]
+    mock_pyautogui.moveTo.assert_not_called()      # the user's mouse is left alone
 
 
-def test_play_actions_dispatches_right_click(mock_pyautogui):
+def test_play_actions_dispatches_right_click(clicks):
     actions.play_actions([("right_click", 100, 200)])
 
-    mock_pyautogui.moveTo.assert_called_once_with(100, 200, duration=0.2)
-    mock_pyautogui.click.assert_called_once_with(button="right")
+    assert clicks == [(100, 200, "right")]
+
+
+def test_a_click_that_cannot_be_made_stops_the_macro(monkeypatch, mock_keyboard):
+    """The steps after a click were recorded for the screen it leads to;
+    typing them somewhere else is worse than stopping."""
+    monkeypatch.setattr(actions.direct_input, "click",
+                        lambda x, y, button="left": actions.direct_input.Outcome(False, "mouse", note="no mouse"))
+
+    actions.play_actions([("click", 1, 2), ("enter", "enter")])
+
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_a_block_macro_stops_at_a_click_that_cannot_be_made(monkeypatch, mock_keyboard):
+    monkeypatch.setattr(actions, "_get_action_delay", lambda: 0.0)
+    monkeypatch.setattr(actions.direct_input, "click",
+                        lambda x, y, button="left": actions.direct_input.Outcome(False, "mouse", note="no mouse"))
+
+    actions.play_actions([{"type": "click", "x": 1, "y": 2}, {"type": "enter"}])
+
+    mock_keyboard.press_and_release.assert_not_called()
 
 
 def test_play_actions_dispatches_enter(mock_keyboard):
@@ -159,9 +193,12 @@ def test_play_actions_dispatches_write_with_punctuation_via_clipboard(mock_pyaut
     mock_pyautogui.hotkey.assert_any_call("ctrl", "v")
 
 
-def test_play_actions_continues_after_a_failing_action(mock_pyautogui, mock_keyboard):
+def test_play_actions_continues_after_a_failing_action(monkeypatch, mock_keyboard):
     """One bad action shouldn't stop the rest of the macro from playing."""
-    mock_pyautogui.moveTo.side_effect = [RuntimeError("boom"), None]
+    def _raise(x, y, button="left"):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(actions.direct_input, "click", _raise)
 
     actions.play_actions([
         ("click", 1, 2),     # will raise, should be caught and logged
@@ -375,7 +412,7 @@ def test_type_text_punctuation_via_clipboard(mock_pyautogui, monkeypatch):
     mock_pyautogui.hotkey.assert_any_call("ctrl", "v")
 
 
-def test_type_text_presses_delete_after_typing_to_clear_autocomplete(mock_pyautogui):
+def test_type_text_presses_delete_after_typing_to_clear_autocomplete(mock_pyautogui, mock_keyboard):
     """
     Regression test: typing "youtube" into an address bar can leave a
     browser-suggested autocomplete URL selected right after it - if the
@@ -384,17 +421,329 @@ def test_type_text_presses_delete_after_typing_to_clear_autocomplete(mock_pyauto
     no-op with nothing selected), so it must always follow typing.
     """
     actions._type_text("youtube")
-    mock_pyautogui.press.assert_called_once_with("delete")
+    mock_keyboard.press_and_release.assert_called_once_with("delete")
 
 
-def test_type_text_delete_comes_after_all_characters_are_typed(mock_pyautogui):
+def test_type_text_delete_comes_after_all_characters_are_typed(mock_pyautogui, mock_keyboard):
     call_order = []
     mock_pyautogui.write.side_effect = lambda ch: call_order.append(("write", ch))
-    mock_pyautogui.press.side_effect = lambda key: call_order.append(("press", key))
+    mock_keyboard.press_and_release.side_effect = lambda key: call_order.append(("press", key))
 
     actions._type_text("hi")
 
     assert call_order == [("write", "h"), ("write", "i"), ("press", "delete")]
+
+
+def test_type_text_typed_straight_into_a_background_window_skips_the_keyboard(
+        monkeypatch, mock_pyautogui, mock_keyboard):
+    monkeypatch.setattr(actions.direct_input, "type_text",
+                        lambda text, window=None: actions.direct_input.Outcome(True, "text message"))
+    monkeypatch.setattr(actions.direct_input, "press_key",
+                        lambda key, window=None: actions.direct_input.Outcome(True, "window message"))
+
+    actions._type_text("hi")
+
+    mock_pyautogui.write.assert_not_called()
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_line_breaks_and_tabs_are_pressed_as_keys(mock_pyautogui, mock_keyboard):
+    """The way pyautogui typed them: "\n" submits a field, "\t" moves on."""
+    order = []
+    mock_pyautogui.write.side_effect = lambda ch: order.append(ch)
+    mock_keyboard.press_and_release.side_effect = lambda key: order.append(f"<{key}>")
+
+    actions._type_text("ab\tc\r\nd")
+
+    assert order == ["a", "b", "<tab>", "c", "<enter>", "d", "<delete>"]
+
+
+def test_typing_stops_when_its_window_cannot_be_reached(monkeypatch, mock_pyautogui, mock_keyboard):
+    monkeypatch.setattr(actions.direct_input, "type_text",
+                        lambda text, window=None: actions.direct_input.Outcome(False, "blocked"))
+
+    actions._type_text("secret")
+
+    mock_pyautogui.write.assert_not_called()
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_a_key_combination_is_not_sent_when_stopped(monkeypatch, mock_keyboard):
+    monkeypatch.setattr(actions, "emergency_stop", True)
+    actions._press_hotkey("ctrl+t")
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_a_generalized_macro_stops_at_a_click_that_cannot_be_made(monkeypatch):
+    """Its later steps were made for the screen that click leads to."""
+    import types as pytypes
+    fake_ai_main = pytypes.SimpleNamespace(
+        get_position_object_and_click=lambda target, button="left": "Could not locate 'x': nope"
+    )
+    monkeypatch.setitem(sys.modules, "ai.main", fake_ai_main)
+    monkeypatch.setattr(sys.modules["ai"], "main", fake_ai_main, raising=False)
+    monkeypatch.setattr(actions.direct_input, "click",
+                        lambda x, y, button="left": actions.direct_input.Outcome(False, "mouse", note="no mouse"))
+
+    with pytest.raises(actions.MacroStopped):
+        actions.click_at_target_or_position("search bar", 10, 20)
+
+
+def test_a_generalized_macro_stops_when_its_target_was_found_but_not_clicked(monkeypatch):
+    import types as pytypes
+    fake_ai_main = pytypes.SimpleNamespace(
+        get_position_object_and_click=lambda target, button="left": "Could not click x at (1, 2): no mouse."
+    )
+    monkeypatch.setitem(sys.modules, "ai.main", fake_ai_main)
+    monkeypatch.setattr(sys.modules["ai"], "main", fake_ai_main, raising=False)
+
+    with pytest.raises(actions.MacroStopped):
+        actions.click_at_target_or_position("search bar", 10, 20)
+
+
+def test_enter_is_released(mock_keyboard):
+    """keyboard.press() held Enter down for good."""
+    actions.tool_enter()
+    mock_keyboard.press_and_release.assert_called_once_with("enter")
+    mock_keyboard.press.assert_not_called()
+
+
+def test_a_key_combination_brings_the_ai_window_forward_first(monkeypatch, mock_keyboard):
+    order = []
+    monkeypatch.setattr(actions.direct_input, "keyboard_window",
+                        lambda window=None: order.append("forward") or actions.direct_input.Outcome(False, "keyboard"))
+    mock_keyboard.press_and_release.side_effect = lambda combo: order.append(combo)
+
+    assert actions._press_hotkey("ctrl+t")
+
+    assert order == ["forward", "ctrl+t"]
+
+
+def test_a_windows_key_combination_is_for_windows_whatever_is_in_front(monkeypatch, mock_keyboard):
+    """Win+R opens Run from any window, Kestrel's own included."""
+    monkeypatch.setattr(actions.direct_input, "keyboard_window",
+                        lambda window=None: actions.direct_input.Outcome(False, "blocked", note="Kestrel's own"))
+
+    assert actions._press_hotkey("win+r")
+    mock_keyboard.press_and_release.assert_called_once_with("win+r")
+    assert not actions._press_hotkey("ctrl+v")
+
+
+# ── Typing that can't finish ────────────────────────────────────────────
+
+@pytest.fixture
+def keyboard_until(monkeypatch):
+    """The window being typed into stays in front for `n` more keys."""
+    def setup(n):
+        left = {"keys": n}
+
+        def reaches(window):
+            left["keys"] -= 1
+            return left["keys"] >= 0
+
+        monkeypatch.setattr(actions.direct_input, "keyboard_reaches", reaches)
+    return setup
+
+
+def test_typing_stops_at_the_key_where_the_window_left_the_front(mock_pyautogui, mock_keyboard, keyboard_until):
+    """Checked before every key, so nothing more lands in the user's
+    window."""
+    keyboard_until(3)
+
+    typed = actions._type_text("Remove-Item -Recurse C:\\temp")
+
+    assert not typed and typed.started and "no longer the one in front" in typed.note
+    assert [c.args[0] for c in mock_pyautogui.write.call_args_list] == ["R", "e", "m"]
+    mock_keyboard.press_and_release.assert_not_called()            # no Delete either
+
+
+def test_write_and_enter_does_not_press_enter_after_cut_off_typing(mock_pyautogui, mock_keyboard, keyboard_until):
+    """A command cut short would run as it is."""
+    keyboard_until(5)
+    recorded = len(actions.actions_list)
+
+    result = actions.tool_write_and_enter("Remove-Item -Recurse C:\\temp")
+
+    assert "partway" in result and "Enter was not pressed" in result
+    mock_keyboard.press_and_release.assert_not_called()
+    assert len(actions.actions_list) == recorded                     # nothing recorded for a macro
+
+
+def test_write_and_enter_says_when_nothing_was_typed(monkeypatch, mock_pyautogui, mock_keyboard):
+    monkeypatch.setattr(actions, "single_fcn", False)
+    monkeypatch.setattr(actions.direct_input, "type_text",
+                        lambda text, window=None: actions.direct_input.Outcome(
+                            False, "blocked", note="its window couldn't be brought to the front"))
+
+    result = actions.tool_write_and_enter("hello")
+
+    assert result.startswith("Nothing was typed") and "brought to the front" in result
+    mock_keyboard.press_and_release.assert_not_called()
+    assert actions.single_fcn is False                              # the run goes on, the AI was told
+
+
+def test_enter_says_when_it_was_not_pressed(monkeypatch, mock_keyboard):
+    monkeypatch.setattr(actions.direct_input, "press_key",
+                        lambda key, window=None: actions.direct_input.Outcome(
+                            False, "blocked", note="Kestrel's own window is in front"))
+
+    assert "not pressed" in actions.tool_enter()
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_typing_that_stops_before_its_first_key_says_nothing_was_typed(mock_pyautogui, mock_keyboard,
+                                                                     keyboard_until):
+    keyboard_until(0)
+
+    result = actions.tool_write_and_enter("hello")
+
+    assert result.startswith("Nothing was typed")
+
+
+def test_keys_that_can_open_a_window_are_followed(monkeypatch, mock_keyboard):
+    """Win+R's Run box, Ctrl+N's window, the app Enter opened a file in:
+    the next keys go there (ai/direct_input.py's follow_keys)."""
+    followed = []
+    monkeypatch.setattr(actions.direct_input, "follow_keys",
+                        lambda before, system=False, switch=False: followed.append(system))
+
+    actions._press_key("enter")
+    actions._press_key("tab")
+    actions._press_hotkey("win+r")
+    actions._press_hotkey("ctrl+n")
+
+    assert followed == [False, True, False]
+
+
+def test_new_page_says_whether_the_tab_opened(monkeypatch, mock_pyautogui):
+    monkeypatch.setattr(actions.time, "sleep", lambda s: None)
+    assert actions.tool_new_page() == "Opened a new tab."
+    monkeypatch.setattr(actions.direct_input, "keyboard_window",
+                        lambda window=None: actions.direct_input.Outcome(False, "blocked", note="no window"))
+    assert actions.tool_new_page() == "No new tab was opened: no window."
+
+
+def test_the_ai_can_press_a_shortcut(monkeypatch, mock_keyboard):
+    """Win+R when the user asks for it; recorded for a macro as a block."""
+    monkeypatch.setattr(actions, "single_fcn", False)
+    monkeypatch.setattr(actions, "actions_list", [])
+
+    assert actions.tool_press_keys("Win + R") == "Pressed win+r."
+    assert actions.tool_press_keys("escape") == "Pressed escape."
+
+    assert [c.args[0] for c in mock_keyboard.press_and_release.call_args_list] == ["win+r", "escape"]
+    assert actions.actions_list == [{"type": "hotkey", "keys": "win+r"}, {"type": "hotkey", "keys": "escape"}]
+    assert actions.single_fcn is True
+
+
+def test_closing_shortcuts_are_asked_about_first(monkeypatch, mock_keyboard):
+    asked = []
+    monkeypatch.setattr(actions.risk_gate, "require_approval", lambda text: asked.append(text) or False)
+
+    result = actions.tool_press_keys("alt+f4")
+
+    assert result.startswith("Refused") and asked
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+@pytest.mark.parametrize("keys", ["shift+del", "control+w", "left ctrl+w", "Alt + F4", "ctrl+right shift+w"])
+def test_closing_shortcuts_are_asked_about_however_they_are_written(monkeypatch, mock_keyboard, keys):
+    asked = []
+    monkeypatch.setattr(actions.risk_gate, "require_approval", lambda text: asked.append(text) or False)
+
+    assert actions.tool_press_keys(keys).startswith("Refused") and asked
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+@pytest.mark.parametrize("keys", ["alt+f4, enter", "tab, ctrl+w"])
+def test_a_closing_shortcut_among_several_presses_is_asked_about(monkeypatch, mock_keyboard, keys):
+    """keyboard reads "a, b" as two presses in a row."""
+    asked = []
+    monkeypatch.setattr(actions.risk_gate, "require_approval", lambda text: asked.append(text) or False)
+
+    assert actions.tool_press_keys(keys).startswith("Refused") and asked
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_a_closing_shortcut_in_the_layouts_own_key_names_is_asked_about(monkeypatch, mock_keyboard):
+    """keyboard accepts the names of the layout in use: on a French one,
+    "maj+suppr" is Shift+Delete. Compared by scan code."""
+    codes = {"alt": (56, 541), "f4": (62,), "ctrl": (29, 3613), "left ctrl": (29,), "w": (17,), "q": (16,),
+             "shift": (42, 54), "maj": (42,), "delete": (83,), "suppr": (83,), "enter": (28,), "a": (30,)}
+
+    def parse_hotkey(combo):
+        return tuple(tuple(codes[name.strip()] for name in step.split("+")) for step in combo.split(","))
+
+    mock_keyboard.parse_hotkey.side_effect = parse_hotkey
+    monkeypatch.setattr(actions, "_confirm_scan_codes", None)
+    asked = []
+    monkeypatch.setattr(actions.risk_gate, "require_approval", lambda text: asked.append(text) or False)
+
+    assert actions.tool_press_keys("maj+suppr").startswith("Refused")
+    assert len(asked) == 1
+    assert actions._needs_confirming("ctrl+a") is False
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_a_shortcut_that_cant_reach_its_window_says_so(monkeypatch, mock_keyboard):
+    monkeypatch.setattr(actions.direct_input, "keyboard_window",
+                        lambda window=None: actions.direct_input.Outcome(False, "blocked", note="no window"))
+
+    assert actions.tool_press_keys("ctrl+a") == "ctrl+a was not pressed: no window."
+
+
+def test_no_delete_outside_a_text_field(monkeypatch, mock_pyautogui, mock_keyboard):
+    """In a file list a Delete would send the selected file to the Recycle
+    Bin."""
+    monkeypatch.setattr(actions.direct_input, "focus_takes_text", lambda: False)
+
+    assert actions._type_text("report")
+
+    mock_keyboard.press_and_release.assert_not_called()
+
+
+def test_combinations_that_stay_in_their_window_arent_followed(monkeypatch, mock_keyboard):
+    followed = []
+    monkeypatch.setattr(actions.direct_input, "follow_keys",
+                        lambda before, system=False, switch=False: followed.append((system, switch)))
+
+    actions._press_hotkey("ctrl+c")
+    actions._press_hotkey("Ctrl+Shift+Z")
+    actions._press_hotkey("ctrl+n")
+    actions._press_hotkey("alt+tab")
+
+    assert followed == [(False, False), (False, True)]
+
+
+def test_alt_tab_goes_through_when_typing_is_held_back(monkeypatch, mock_keyboard):
+    """It is for Windows itself, like Win+R."""
+    monkeypatch.setattr(actions.direct_input, "keyboard_window",
+                        lambda window=None: actions.direct_input.Outcome(False, "blocked", note="closed"))
+
+    assert actions._press_hotkey("alt+tab")
+    mock_keyboard.press_and_release.assert_called_once_with("alt+tab")
+
+
+def test_no_delete_after_text_that_ends_with_enter(mock_pyautogui, mock_keyboard):
+    """That Enter may have closed a Save As dialog; a Delete after it would
+    land on the file selected in the window behind."""
+    pressed = []
+    mock_keyboard.press_and_release.side_effect = lambda key: pressed.append(key)
+
+    assert actions._type_text("report.txt\n")
+
+    assert pressed == ["enter"]
+
+
+def test_a_macro_stops_where_its_typing_could_not_go_in(monkeypatch, mock_keyboard):
+    """Block macros, and recordings: the steps after it expect the text."""
+    monkeypatch.setattr(actions, "_type_text", lambda text: actions.Typed(False, "the window left the front"))
+    monkeypatch.setattr(actions.time, "sleep", lambda s: None)
+
+    actions.play_actions([{"type": "write", "value": "hello"}, {"type": "enter"}])
+    actions.play_actions([("hello", "write"), ("enter", "enter")])
+
+    mock_keyboard.press_and_release.assert_not_called()
 
 
 def test_click_at_target_or_position_uses_vision_when_it_succeeds(monkeypatch, mock_pyautogui):
@@ -431,7 +780,23 @@ def test_click_at_target_or_position_passes_button_through_to_vision(monkeypatch
     assert result == "Right-clicked this file"
 
 
-def test_click_at_target_or_position_falls_back_with_right_button(monkeypatch, mock_pyautogui):
+def test_a_generalized_macro_clicks_its_recorded_spot_when_kestrel_covers_the_target(monkeypatch, clicks):
+    """Kestrel's window over the target hides it from the screenshot. A
+    recorded macro clicks its spot through Kestrel's window; so does a
+    generalized one, rather than stopping."""
+    import types as pytypes
+    fake_ai_main = pytypes.SimpleNamespace(
+        get_position_object_and_click=lambda target, button="left": (
+            "Could not click search bar at (960, 540): Kestrel's own window is there, not the app.")
+    )
+    monkeypatch.setitem(sys.modules, "ai.main", fake_ai_main)
+    monkeypatch.setattr(sys.modules["ai"], "main", fake_ai_main, raising=False)
+
+    assert actions.click_at_target_or_position("search bar", 10, 20) == "Clicked fallback position (10, 20)"
+    assert clicks == [(10, 20, "left")]
+
+
+def test_click_at_target_or_position_falls_back_with_right_button(monkeypatch, clicks):
     import types as pytypes
     fake_ai_main = pytypes.SimpleNamespace(
         get_position_object_and_click=lambda target, button="left": "Could not locate 'x': nope"
@@ -441,10 +806,10 @@ def test_click_at_target_or_position_falls_back_with_right_button(monkeypatch, m
 
     actions.click_at_target_or_position("this file", 10, 20, button="right")
 
-    mock_pyautogui.click.assert_called_once_with(button="right")
+    assert clicks == [(10, 20, "right")]
 
 
-def test_click_at_target_or_position_falls_back_on_vision_failure(monkeypatch, mock_pyautogui):
+def test_click_at_target_or_position_falls_back_on_vision_failure(monkeypatch, clicks):
     import types as pytypes
     fake_ai_main = pytypes.SimpleNamespace(
         get_position_object_and_click=lambda target, button="left": "Could not locate 'search bar': nope"
@@ -454,12 +819,11 @@ def test_click_at_target_or_position_falls_back_on_vision_failure(monkeypatch, m
 
     result = actions.click_at_target_or_position("search bar", 111, 222)
 
-    mock_pyautogui.moveTo.assert_called_once_with(111, 222, duration=0.2)
-    mock_pyautogui.click.assert_called_once()
+    assert clicks == [(111, 222, "left")]
     assert "111" in result and "222" in result
 
 
-def test_click_at_target_or_position_falls_back_on_exception(monkeypatch, mock_pyautogui):
+def test_click_at_target_or_position_falls_back_on_exception(monkeypatch, clicks):
     import types as pytypes
 
     def _raise(target, button="left"):
@@ -471,8 +835,7 @@ def test_click_at_target_or_position_falls_back_on_exception(monkeypatch, mock_p
 
     actions.click_at_target_or_position("search bar", 5, 6)
 
-    mock_pyautogui.moveTo.assert_called_once_with(5, 6, duration=0.2)
-    mock_pyautogui.click.assert_called_once()
+    assert clicks == [(5, 6, "left")]
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -561,11 +924,15 @@ def test_focus_window_calls_set_foreground_window(monkeypatch):
 
     monkeypatch.setattr(actions, "win32con", type("WC", (), {"SW_MAXIMIZE": 3})())
 
+    monkeypatch.setattr(actions.direct_input, "_target_hwnd", None)
+
     result = actions._focus_window(1001)
 
     assert result is True
     assert ("set_fg", 1001) in calls
     assert ("show", 1001, 3) in calls
+    # What the AI types next goes to the app it just brought up.
+    assert actions.direct_input._target_hwnd == 1001
 
 
 def test_focus_window_returns_false_on_exception(monkeypatch):

@@ -106,6 +106,16 @@ def qapp():
 
 
 @pytest.fixture(autouse=True)
+def mouse_fallback_on(monkeypatch):
+    """
+    Settings > Mouse at its default for every test (ai/direct_input.py).
+    It is saved in .env, and a source checkout where someone turned it
+    off would otherwise make every test that plays a click skip it.
+    """
+    monkeypatch.setenv("KESTREL_MOUSE_FALLBACK", "1")
+
+
+@pytest.fixture(autouse=True)
 def isolate_macro_storage(monkeypatch, tmp_path):
     """
     Point macro storage at a throwaway directory for every test.
@@ -152,5 +162,13 @@ def isolate_macro_storage(monkeypatch, tmp_path):
         trees = tmp_path / "trees"
         trees.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(tree, "TREES_DIR", str(trees))
+
+    # An autonomous run keeps each step's screenshot under
+    # USER_DATA_PATH (ai/run_screenshots.py), which from source is the
+    # project folder. Only when ai.main is already loaded: importing it
+    # here would drag its dependencies into every test.
+    ai_main = sys.modules.get("ai.main")
+    if ai_main is not None and hasattr(ai_main, "RUN_SCREENSHOTS_DIR"):
+        monkeypatch.setattr(ai_main, "RUN_SCREENSHOTS_DIR", str(tmp_path / "run_screenshots"))
 
     yield

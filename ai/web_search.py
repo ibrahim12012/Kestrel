@@ -67,6 +67,16 @@ _RESULT_RE = re.compile(
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
+# DuckDuckGo's "are you a person?" page, which it serves instead of
+# results when it suspects automation. Reported as what it is: this does
+# not try to get past it (see ai/web_reader.py's module docstring on why
+# nothing here tries to get past a human check).
+_CHALLENGE_SIGNS = ("anomaly-modal", "bots use duckduckgo too", "complete the following challenge")
+
+
+class SearchBlockedError(RuntimeError):
+    pass
+
 
 def _strip_tags(html_fragment: str) -> str:
     """Result titles/snippets can contain <b> around the matched query
@@ -121,5 +131,16 @@ def search(query: str, max_results: int = 5) -> "list[dict]":
     response = requests.get(
         _SEARCH_URL, params={"q": query}, headers=_HEADERS, timeout=10,
     )
+    if response.status_code == 429:
+        raise SearchBlockedError(
+            "DuckDuckGo says there have been too many searches (HTTP 429). Kestrel stops rather than "
+            "retrying around it; try again in a few minutes."
+        )
     response.raise_for_status()
+    lowered = response.text[:200_000].lower()
+    if any(sign in lowered for sign in _CHALLENGE_SIGNS):
+        raise SearchBlockedError(
+            "DuckDuckGo asked for a human check instead of showing results. Kestrel doesn't try to get "
+            "past those; searching again in a few minutes usually works, or search in your browser."
+        )
     return _parse_results(response.text, max_results)

@@ -427,13 +427,17 @@ def _render_nodes(nodes: list, param_names: set, indent: int) -> list:
                 f"{pad}click_at_target_or_position({step.get('target', '')!r}, {x}, {y}, button=\"right\")"
             )
         elif step_type == "write":
-            lines.append(f"{pad}_type_text({_write_value_expression(step.get('value', ''), param_names)})")
+            # ai.actions helpers, which reach the window the macro is
+            # working in without the user's mouse (ai/direct_input.py),
+            # and raise MacroStopped when the text or the key couldn't
+            # get there: the steps after it expect it to have.
+            lines.append(f"{pad}_macro_type({_write_value_expression(step.get('value', ''), param_names)})")
         elif step_type == "enter":
-            lines.append(f'{pad}keyboard.press_and_release("enter")')
+            lines.append(f'{pad}_macro_key("enter")')
         elif step_type == "hotkey":
-            lines.append(f"{pad}keyboard.press_and_release({str(step.get('keys', '')).strip()!r})")
+            lines.append(f"{pad}_macro_hotkey({str(step.get('keys', '')).strip()!r})")
         elif step_type == "new_tab":
-            lines.append(f'{pad}pyautogui.hotkey("ctrl", "t")')
+            lines.append(f'{pad}_macro_hotkey("ctrl+t")')
         elif step_type == "open_app":
             lines.append(f"{pad}tool_open_application({step.get('app', '')!r})")
         else:
@@ -472,6 +476,9 @@ def render_function(spec: dict) -> str:
         f"def tool_{name}({signature}) -> str:",
         f"    {docstring!r}",
         f"    print({'Executing generalized macro: ' + name!r})",
+        # Typing goes to the window this macro's own clicks pick, not one
+        # an earlier run left behind (ai/direct_input.py).
+        "    _start_macro()",
     ]
 
     # Control blocks compile to real nested Python (a `for` for repeat,

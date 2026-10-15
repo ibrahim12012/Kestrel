@@ -29,6 +29,12 @@ FORBIDDEN - never do any of these:
 TO OPEN ANY APP → always use tool_open_application("app_name") directly.
 It finds and launches the app without needing Windows search at all.
 
+To press a key or a shortcut (Escape to close a popup, Tab to the next
+field, Ctrl+A to select all), use tool_press_keys.
+
+In an app mapped with tool_discover_application_ui, press its controls by
+name with tool_use_mapped_control.
+
 ---
 
 ## NO DIRECT URLs
@@ -63,6 +69,20 @@ Rule: if it has a .com → it is a website → browser → navigate.
 
 ---
 
+## FINDING THINGS OUT ON THE WEB
+
+When a step only needs information from the web (an address, a price, a
+date to type into a form), the browser isn't needed for it:
+tool_web_search and tool_read_url return the text directly, without
+touching the screen. Use the browser for what has to be done on screen.
+
+If one of them reports a CAPTCHA or bot check, don't call it again for
+that page. If the goal needs the page, open it in the browser like any
+other site; if the check then shows on screen, hand it to the user (see
+CAPTCHAS below).
+
+---
+
 ## BEFORE EVERY ACTION - READ THE SCREENSHOT
 
 Before choosing a tool, verify:
@@ -70,6 +90,25 @@ Before choosing a tool, verify:
 - Is the page fully loaded? No spinners, no skeleton screens, no loading bars?
 - Is there a popup, cookie banner, or overlay blocking my target? → dismiss first
 - Can I visually locate the element I need to interact with?
+
+---
+
+## THE CONTROLS LIST UNDER EACH SCREENSHOT
+
+Most steps come with a list of the controls in the window in front, read
+from Windows UI Automation: each one's type, name and screen position,
+plus what changed since the previous step. Use it:
+
+- To know WHICH control you are looking at: the name there is exact,
+  the screenshot is a picture.
+- "DIFFERENT control at (x, y): was X, now Y" means the thing you saw
+  at those coordinates last step is gone and something else is there.
+  Never act on it as if it were still X.
+- Before clicking coordinates from an earlier step, and after anything
+  that can change the screen (a dialog, a scroll, a page load), call
+  tool_check_control_at(x, y) to confirm what is there now.
+- The list can be empty or cut short (games, canvases and some web
+  pages expose little). Then go by the screenshot as usual.
 
 ---
 

@@ -1,0 +1,43 @@
+/*
+ * Kestrel Setup resources: icon, manifest, version information.
+ *
+ * The two "@@KS_VERSION_SLOT..." strings are fixed-width placeholders.
+ * build_installer.py writes the app version into them (and into the
+ * numeric FILEVERSION below) when it builds a setup, so one compiled stub
+ * serves every release. Keep them exactly this long; see VERSION_SLOT in
+ * build_installer.py.
+ */
+
+#include <winver.h>
+
+1 ICON "../../assets/icon/Kestrel.ico"
+1 24 "setup.manifest"
+
+1 VERSIONINFO
+FILEVERSION 0, 0, 0, 0
+PRODUCTVERSION 0, 0, 0, 0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Kestrel"
+            VALUE "FileDescription", "Kestrel Setup"
+            VALUE "FileVersion", "@@KS_VERSION_SLOT@@@@@@@@@@@@@"
+            VALUE "InternalName", "KestrelSetup"
+            VALUE "LegalCopyright", "Copyright (C) 2026 the Kestrel authors. GPL v3 or commercial."
+            VALUE "OriginalFilename", "KestrelSetup.exe"
+            VALUE "ProductName", "Kestrel"
+            VALUE "ProductVersion", "@@KS_VERSION_SLOT@@@@@@@@@@@@@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

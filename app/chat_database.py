@@ -188,6 +188,36 @@ def init_db():
         # come along to turn it off.
         conn.execute("UPDATE chats SET is_ai_working=0 WHERE is_ai_working=1")
 
+        # Images sent with a message (a screenshot, a dropped picture),
+        # so the chat can show them on the message afterwards. Paths
+        # only: the files themselves stay where they are (screenshots in
+        # the app's screenshot folder, pasted images in "attachments").
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS message_attachments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                path       TEXT    NOT NULL,
+                kind       TEXT    NOT NULL DEFAULT 'image'
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_attachments_message ON message_attachments(message_id)"
+        )
+
+        # A conversation's summary, once it has been compacted (see
+        # ai/compaction.py): the earlier part of the chat, condensed, and
+        # the id of the last message it covers. The model is given the
+        # summary plus everything after that message instead of the whole
+        # history. One row per chat, replaced when compacted again.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_summaries (
+                chat_id         INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+                summary         TEXT    NOT NULL,
+                upto_message_id INTEGER NOT NULL,
+                created_at      TEXT    NOT NULL
+            )
+        """)
+
 
 # ── Chats ──────────────────────────────────────────────────────────────────────
 
@@ -567,6 +597,62 @@ def get_message(message_id: int) -> "sqlite3.Row | None":
     question."""
     with db_connection() as conn:
         return conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+
+
+# ── Attachments ────────────────────────────────────────────────────────────────
+
+def add_attachments(message_id: int, paths: "list[str]", kind: str = "image") -> None:
+    """Records the images sent with a message (see message_attachments)."""
+    paths = [p for p in paths if p]
+    if not paths:
+        return
+    with db_connection() as conn:
+        conn.executemany(
+            "INSERT INTO message_attachments (message_id, path, kind) VALUES (?, ?, ?)",
+            [(message_id, p, kind) for p in paths],
+        )
+
+
+def get_attachments(message_id: int) -> "list[str]":
+    """The image paths sent with a message, in the order they were sent."""
+    try:
+        with db_connection() as conn:
+            rows = conn.execute(
+                "SELECT path FROM message_attachments WHERE message_id=? ORDER BY id",
+                (message_id,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []   # a database from before the table existed, not initialised yet
+    return [r["path"] for r in rows]
+
+
+# ── Conversation summaries (compaction) ────────────────────────────────────────
+
+def get_chat_summary(chat_id: int) -> "sqlite3.Row | None":
+    """(summary, upto_message_id, created_at) for a compacted chat, else None."""
+    try:
+        with db_connection() as conn:
+            return conn.execute(
+                "SELECT summary, upto_message_id, created_at FROM chat_summaries WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+
+
+def set_chat_summary(chat_id: int, summary: str, upto_message_id: int) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            "INSERT INTO chat_summaries (chat_id, summary, upto_message_id, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET summary=excluded.summary, "
+            "upto_message_id=excluded.upto_message_id, created_at=excluded.created_at",
+            (chat_id, summary, upto_message_id, datetime.now().isoformat()),
+        )
+
+
+def clear_chat_summary(chat_id: int) -> None:
+    with db_connection() as conn:
+        conn.execute("DELETE FROM chat_summaries WHERE chat_id=?", (chat_id,))
 
 
 def get_message_count(chat_id: int) -> int:

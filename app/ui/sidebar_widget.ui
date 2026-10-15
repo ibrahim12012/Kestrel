@@ -164,10 +164,6 @@ QPushButton#btnSettings:hover {
         <property name="text">
          <string>New chat</string>
         </property>
-        <property name="icon">
-         <iconset>
-          <normaloff>../../assets/plus-solid-full.svg</normaloff>../../assets/plus-solid-full.svg</iconset>
-        </property>
         <property name="checkable">
          <bool>true</bool>
         </property>
@@ -184,10 +180,6 @@ QPushButton#btnSettings:hover {
         <property name="text">
          <string>Macros</string>
         </property>
-        <property name="icon">
-         <iconset>
-          <normaloff>../../assets/bolt-solid-full.svg</normaloff>../../assets/bolt-solid-full.svg</iconset>
-        </property>
         <property name="checkable">
          <bool>true</bool>
         </property>
@@ -201,10 +193,6 @@ QPushButton#btnSettings:hover {
         <property name="text">
          <string>Recorder</string>
         </property>
-        <property name="icon">
-         <iconset>
-          <normaloff>../../assets/bullseye-solid-full.svg</normaloff>../../assets/bullseye-solid-full.svg</iconset>
-        </property>
         <property name="checkable">
          <bool>true</bool>
         </property>
@@ -217,10 +205,6 @@ QPushButton#btnSettings:hover {
         </property>
         <property name="text">
          <string>Mapping</string>
-        </property>
-        <property name="icon">
-         <iconset>
-          <normaloff>../../assets/magnifying-glass-solid-full.svg</normaloff>../../assets/magnifying-glass-solid-full.svg</iconset>
         </property>
         <property name="checkable">
          <bool>true</bool>
@@ -346,10 +330,6 @@ QPushButton#btnSettings:hover {
         </property>
         <property name="text">
          <string>  Settings</string>
-        </property>
-        <property name="icon">
-         <iconset>
-          <normaloff>../../assets/gear-solid-full.svg</normaloff>../../assets/gear-solid-full.svg</iconset>
         </property>
         <property name="iconSize">
          <size>

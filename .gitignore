@@ -15,6 +15,9 @@
 /macros/
 /ai/generated/
 /ai/macros/
+/ai/screenshots/
+/attachments/
+/logs/
 /trees/
 # Written to USER_DATA_PATH, which IS the project root when running from
 # source, so this is your assistant profiles rather than a template.
@@ -42,6 +45,12 @@ env/
 /dist/
 /installer/Output/
 *.manifest
+# ...except the two the builds read: Kestrel.spec embeds the first in
+# Kestrel.exe, and the setup stub's resources (setup.rc) the second.
+!/installer/Kestrel.manifest
+!/installer/setup/setup.manifest
+# The Linux-only installer preview (installer/setup/preview/Makefile).
+/installer/setup/preview/preview
 
 # ── Editors and OS ───────────────────────────────────────────────────
 .vscode/

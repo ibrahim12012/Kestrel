@@ -95,3 +95,27 @@ DEFAULT_THEME = "dark"
 def colors(theme: str = DEFAULT_THEME) -> dict:
     """Returns the token dict for `theme`, falling back to dark for anything unrecognized."""
     return THEMES.get(theme, THEMES[DEFAULT_THEME])
+
+
+def menu_style(c: dict) -> str:
+    """
+    A popup menu (the tray menu, a chat's right-click menu) in the app's
+    own palette rather than the OS's. The menu's icons are tinted from the
+    theme, and a theme-coloured icon on an OS-coloured menu is how light
+    grey icons ended up on a light grey menu.
+    """
+    return f"""
+QMenu {{
+    background-color: {c['bg_elevated']};
+    border: 1px solid {c['border']};
+    border-radius: 8px;
+    padding: 4px;
+    color: {c['text_primary']};
+    font-family: "Segoe UI";
+    font-size: 12px;
+}}
+QMenu::item {{ padding: 7px 24px 7px 10px; border-radius: 5px; }}
+QMenu::item:selected {{ background-color: {c['bg_hover_strong']}; }}
+QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 8px; }}
+QMenu::icon {{ padding-left: 8px; }}
+"""

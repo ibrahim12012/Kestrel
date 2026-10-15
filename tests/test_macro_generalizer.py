@@ -356,9 +356,10 @@ def test_render_function_actually_returns_a_string_when_called():
     source = gen.render_function(VALID_SPEC)
     namespace = {
         "click_at_target_or_position": lambda *a, **k: None,
-        "_type_text": lambda *a, **k: None,
-        "keyboard": type("FakeKeyboard", (), {"press_and_release": staticmethod(lambda *a: None)})(),
-        "pyautogui": type("FakePyautogui", (), {"hotkey": staticmethod(lambda *a: None)})(),
+        "_macro_type": lambda *a, **k: None,
+        "_macro_key": lambda *a, **k: None,
+        "_macro_hotkey": lambda *a, **k: None,
+        "_start_macro": lambda: None,
         "time": type("FakeTime", (), {"sleep": staticmethod(lambda *a: None)})(),
         "tool_open_application": lambda *a: None,
     }
@@ -393,9 +394,10 @@ def test_render_function_parameters_are_type_annotated():
     ast.parse(source)
 
     namespace = {"click_at_target_or_position": lambda *a, **k: None,
-                 "_type_text": lambda *a, **k: None,
-                 "keyboard": type("K", (), {"press_and_release": staticmethod(lambda *a: None)})(),
-                 "pyautogui": type("P", (), {"hotkey": staticmethod(lambda *a: None)})(),
+                 "_macro_type": lambda *a, **k: None,
+                 "_macro_key": lambda *a, **k: None,
+                 "_macro_hotkey": lambda *a, **k: None,
+                 "_start_macro": lambda: None,
                  "tool_open_application": lambda *a, **k: None,
                  "time": __import__("time")}
     exec(source, namespace)
@@ -407,6 +409,42 @@ def test_render_function_parameters_are_type_annotated():
             f"parameter {param.name!r} has no (or wrong) type annotation - "
             "this is exactly what breaks Gemini's automatic function calling"
         )
+
+
+def test_generated_macros_press_keys_through_the_window_aware_helpers():
+    """Typing, Enter and key combinations go through ai.actions' helpers,
+    which reach the window the macro works in without the user's mouse,
+    and stop the macro when they can't."""
+    spec = {**VALID_SPEC, "steps": [
+        {"type": "write", "value": "lofi"},
+        {"type": "enter"},
+        {"type": "hotkey", "keys": "ctrl+l"},
+        {"type": "new_tab"},
+    ]}
+    source = gen.render_function(spec)
+    assert "_macro_type('lofi')" in source
+    assert '_macro_key("enter")' in source
+    assert "_macro_hotkey('ctrl+l')" in source
+    assert '_macro_hotkey("ctrl+t")' in source
+    assert "keyboard." not in source and "pyautogui." not in source
+    assert "_start_macro()" in source
+
+
+def test_a_generated_macro_stops_where_its_typing_could_not_go_in(monkeypatch):
+    """The steps after it expect the text to be there."""
+    import ai.actions as actions
+    monkeypatch.setattr(actions, "_type_text", lambda text: actions.Typed(False, "the window left the front"))
+    pressed = []
+    monkeypatch.setattr(actions, "_press_key", lambda key, window=None: pressed.append(key) or actions.Typed(True))
+    monkeypatch.setattr(actions.time, "sleep", lambda s: None)
+    spec = {**VALID_SPEC, "steps": [{"type": "write", "value": "{query}"}, {"type": "enter"}]}
+    namespace = vars(actions).copy()
+    exec(compile(gen.render_function(spec), "<test>", "exec"), namespace)
+    # The helpers look _type_text up in ai.actions, where the patch is.
+    result = namespace["tool_search_youtube_and_play_first"](query="soprano")
+
+    assert "stopped" in result and "the window left the front" in result
+    assert pressed == []
 
 
 def test_render_function_uses_click_at_target_or_position():

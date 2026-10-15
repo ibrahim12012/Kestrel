@@ -168,6 +168,10 @@ VSVersionInfo(
 
 VERSION_FILE = _version_resource()
 MANIFEST_FILE = os.path.join(PROJECT_ROOT, "installer", "Kestrel.manifest")
+# Runs before PyInstaller's own runtime hooks (and so before PyQt6 loads
+# Qt): picks the newest Microsoft C++ runtime on the machine for the whole
+# process. See app/win_runtime.py.
+RUNTIME_HOOKS = [os.path.join(PROJECT_ROOT, "installer", "pyi_rth_kestrel_runtime.py")]
 
 a = Analysis(
     ["main.py"],
@@ -177,7 +181,7 @@ a = Analysis(
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=RUNTIME_HOOKS,
     excludes=excludes,
     noarchive=False,
 )

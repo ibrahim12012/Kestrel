@@ -8,6 +8,11 @@ import importlib
 import os
 import sys
 import time
+
+# Used by _bind_escape_abort. It was called there without ever being
+# imported, so binding Esc failed with a NameError that the surrounding
+# try/except turned into a warning, and Esc never stopped a run.
+import keyboard
 from PyQt6 import uic
 from PyQt6.QtWidgets import (
     QMainWindow, QSystemTrayIcon,
@@ -43,9 +48,11 @@ import ai.profiles as profiles
 import app.theme as theme
 import app.icons as icons
 from ai.log import log as print
+from ai.log import log_debug
 
 from paths import BASE_PATH
 import branding
+from app import crash_report
 from app.i18n import tr
 root_path = BASE_PATH
 
@@ -53,21 +60,7 @@ root_path = BASE_PATH
 def _tray_menu_style(c: dict) -> str:
     """The system-tray menu, in the app's own palette rather than the
     OS's - see _setup_tray for why that matters for its icons."""
-    return f"""
-QMenu {{
-    background-color: {c['bg_elevated']};
-    border: 1px solid {c['border']};
-    border-radius: 8px;
-    padding: 4px;
-    color: {c['text_primary']};
-    font-family: "Segoe UI";
-    font-size: 12px;
-}}
-QMenu::item {{ padding: 7px 24px 7px 10px; border-radius: 5px; }}
-QMenu::item:selected {{ background-color: {c['bg_hover_strong']}; }}
-QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 8px; }}
-QMenu::icon {{ padding-left: 8px; }}
-"""
+    return theme.menu_style(c)
 
 
 def _confirm_box_style(c: dict) -> str:
@@ -116,6 +109,46 @@ def _build_window_chrome_style(c: dict) -> str:
     a widget's own stylesheet wins over a cascaded ancestor rule for itself.
     """
     return f"QMainWindow {{ background-color: {c['bg_base']}; }}"
+
+
+# Widgets whose only job is to put text (or a row of buttons) on top of
+# whatever surface they sit on. See _container_style.
+_TEXT_ONLY_WIDGETS = "QLabel, QCheckBox, QRadioButton, QDialogButtonBox"
+
+
+def _container_style(declarations: str) -> str:
+    """
+    Stylesheet for the three layout containers from main_window.ui
+    (centralwidget, sidebar_container, chat_container).
+
+    These used to be set as bare declarations, e.g.
+    "background-color: #0a0a0a;". Qt reads a stylesheet with no selector
+    as `* { ... }`, so it did not style the container: it styled the
+    container and every widget inside it, and every dialog opened from
+    inside it, because a dialog inherits its parent's stylesheet.
+
+    That is the black highlight behind the text of the delete-profile
+    confirmation. The dialog paints itself in bg_panel, and each of its
+    labels was painted in bg_base on top of that, a darker box behind
+    every line of text. The same thing happened to the delete-chat and
+    rename-chat dialogs, to labels on any card that did not happen to set
+    `background: transparent` itself (which is why so many of them do),
+    and, in the sidebar, the container's border-right was drawn on the
+    right edge of every label as well.
+
+    The declarations still cascade, deliberately: inputs, scroll areas
+    and unstyled dialogs in the app have always taken their dark
+    background from here, and changing that is a different job. What is
+    exempted is the one kind of widget that never needs a background of
+    its own: text, which should sit on whatever surface it is placed on.
+    Anything nearer that sets a background on a label on purpose (a
+    badge, a chip) still wins, because a closer stylesheet always takes
+    precedence over this one.
+    """
+    return (
+        f"* {{ {declarations} }}\n"
+        f"{_TEXT_ONLY_WIDGETS} {{ background-color: transparent; border: none; }}\n"
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -383,11 +416,22 @@ class MainWindow(QMainWindow):
         # returns) runs a real QEventLoop for a meaningful stretch on its
         # own, which is what actually gets this splash page painted
         # on-screen for real before anything past it is ever shown.
+        #
+        # The two stages bracket the moment Windows first creates and draws
+        # the window: if the app dies in between, the next launch says so
+        # in logs/crash.log (see app/crash_report.py).
+        crash_report.stage("showing the window")
         self.show()
+        crash_report.stage("window shown")
         # The native window exists from here, so DWM will accept an
         # attribute for it. Before show(), winId() is not a usable
         # HWND and the call is silently ignored.
         self._apply_rounded_corners()
+        # Redraws the window when Qt's scale and Windows' fall out of step,
+        # which showed as the window drawn twice after Alt+Tab. See
+        # app/dpi_guard.py.
+        from app.dpi_guard import DpiGuard
+        self._dpi_guard = DpiGuard(self)
 
         # ── Main widgets ───────────────────────────────────────────────────────
         self.sidebar  = Sidebar()
@@ -442,9 +486,9 @@ class MainWindow(QMainWindow):
         # ── System tray ────────────────────────────────────────────────────────
         self._tray_icon_path     = f"{root_path}/{branding.ICON_PATH}"
         # Was Red-transparent-1000.png: a flashing red icon reads as a
-        # system warning, not "Kestrel is working". The two marks differ
-        # only in colour, which is readable at a glance in a taskbar full
-        # of monochrome icons without looking like an alert.
+        # system warning, not "Kestrel is working". Then the black-and-
+        # purple mark; now the same purple mark, dimmed, so the logo in
+        # the tray is always the purple one and simply pulses while busy.
         self._tray_icon_alt_path = f"{root_path}/{branding.ICON_ALT_PATH}"
         self._setup_tray(self._tray_icon_path)
         self._tray_blink_state = True
@@ -512,6 +556,10 @@ class MainWindow(QMainWindow):
         """
         if self._shell_stack.currentWidget() is page:
             return
+        # A screenshot open over the app (app/image_viewer.py) would end up
+        # under the new page, out of sight but still taking its keys.
+        from app.image_viewer import close_viewers_over
+        close_viewers_over(self._shell_stack)
         self._shell_stack.setCurrentWidget(page)
 
         effect = QGraphicsOpacityEffect(page)
@@ -553,6 +601,12 @@ class MainWindow(QMainWindow):
         loop.exec()
         signal.disconnect(_capture)
         return result[0] if len(result) == 1 else tuple(result)
+
+    def overlay_host(self) -> QWidget:
+        """Where things shown over the app go, inside this window rather
+        than in windows of their own: everything below the title bar. The
+        screenshot viewer (app/image_viewer.py) opens here."""
+        return self._shell_stack
 
     def run_name_gate(self) -> None:
         """Shows the "name your assistant" page and blocks until Continue
@@ -624,6 +678,9 @@ class MainWindow(QMainWindow):
             # actually in use, so there's no reason to pay for it (or
             # the registration itself) on every single app launch.
             self.mapping = MappingWidget()
+            # Its "Show the map on screen" switch hides or brings back the
+            # overlay, which this window owns.
+            self.mapping.overlayToggled.connect(self._mapping_monitor.set_user_visible)
             self._stack.insertWidget(self.PAGE_MAPPING, self.mapping)
 
         self._stack.setCurrentIndex(page_index)
@@ -742,6 +799,17 @@ class MainWindow(QMainWindow):
         duration.
         """
         if not self._confirm_screen_match(macro_id):
+            return
+        # One automation at a time (ai/automation_lock.py). The worker
+        # takes the lock itself; this is so the refusal is seen.
+        from ai import automation_lock
+        from app.mapping_widget import automation_name
+        running = automation_lock.running()
+        if running:
+            QMessageBox.information(
+                self, tr("Macro not started"),
+                tr("Another automation is running ({what}). Stop it first.", what=automation_name(running)),
+            )
             return
         print(f"[Macro] Run: {macro_id}", input_data=params)
 
@@ -1245,6 +1313,10 @@ class MainWindow(QMainWindow):
         self.sidebar.setParent(None)
         self.sidebar.deleteLater()
         if self.mapping is not None:
+            # Its ai.discovery.events callbacks go first: left registered,
+            # the next mapping run would emit signals on a deleted widget,
+            # which can crash the app instead of raising an error.
+            self.mapping._unregister_events()
             self._stack.removeWidget(self.mapping)
             self.mapping.deleteLater()
             self.mapping = None          # rebuilt lazily by _navigate
@@ -1391,26 +1463,31 @@ class MainWindow(QMainWindow):
         hook. With nothing running this returns immediately and the key
         press goes on to whatever the user was actually doing; the toast
         and the chat note only happen when there was something to stop.
+
+        Not while a mapping run is going, even one inside an autonomous
+        run: the mapper presses Esc itself to back out of the menus and
+        dialogs it opens, and this hook can't tell its Esc from yours, so
+        the run would stop itself at the first menu. The stop shortcut
+        and the Mapping page's Stop button stop it.
         """
         if not self._automation_is_running():
+            return
+        from ai.discovery import events as discovery_events
+        if discovery_events.is_running():
             return
         QMetaObject.invokeMethod(
             self, "_trigger_stop_automation", Qt.ConnectionType.QueuedConnection
         )
 
     def _automation_is_running(self) -> bool:
-        """Whether anything is currently driving the machine: an
-        autonomous run, a macro, or a UI mapping pass."""
+        """Whether an autonomous run or a macro is driving the machine."""
         if self._automation_chat_id is not None:
             return True
-        for attr in ("_macro_thread", "_mapping_thread"):
-            thread = getattr(self, attr, None)
-            try:
-                if thread is not None and thread.isRunning():
-                    return True
-            except RuntimeError:
-                continue          # the QThread was already deleted
-        return False
+        thread = getattr(self, "_macro_thread", None)
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False          # the QThread was already deleted
 
     def register_global_shortcuts(self) -> None:
         """
@@ -1477,7 +1554,7 @@ class MainWindow(QMainWindow):
         try:
             keyboard.add_hotkey(
                 combo,
-                lambda: QMetaObject.invokeMethod(self, callback.__name__, Qt.ConnectionType.QueuedConnection),
+                lambda: self._on_global_hotkey(shortcut_id, callback.__name__),
             )
             self._bound_shortcuts[shortcut_id] = combo
             return True, f"Shortcut active: {combo}"
@@ -1487,6 +1564,29 @@ class MainWindow(QMainWindow):
             if old_combo:
                 self._bind_shortcut(shortcut_id, old_combo, callback)
             return False, f"Invalid combination, or already used by another app: {e}"
+
+    # A held combination auto-repeats, and the `keyboard` library reports
+    # every repeat as the hotkey pressed again: holding the screenshot
+    # shortcut half a second too long took two screenshots, with two
+    # sounds. Presses closer together than this, measured from the last
+    # repeat rather than the first press, count as one. Longer than
+    # Windows' longest key-repeat delay (1 s), so the first repeat of a
+    # held key always falls inside it.
+    HOTKEY_REPEAT_WINDOW = 1.1
+
+    def _on_global_hotkey(self, shortcut_id: str, slot_name: str) -> None:
+        """Called on the keyboard library's listener thread, never the GUI
+        thread: drops auto-repeats, then hands the real press to the slot
+        on the GUI thread."""
+        now = time.monotonic()
+        last_events = getattr(self, "_hotkey_last_event", None)
+        if last_events is None:
+            last_events = self._hotkey_last_event = {}
+        last = last_events.get(shortcut_id)
+        last_events[shortcut_id] = now
+        if last is not None and now - last < self.HOTKEY_REPEAT_WINDOW:
+            return
+        QMetaObject.invokeMethod(self, slot_name, Qt.ConnectionType.QueuedConnection)
 
     def rebind_shortcut(self, shortcut_id: str, combo: str) -> tuple[bool, str]:
         """
@@ -1529,11 +1629,12 @@ class MainWindow(QMainWindow):
         """Re-skins the few widgets app/ui/main_window.ui sets a LOCAL styleSheet on directly - see _build_window_chrome_style's docstring for why each needs its own call rather than one setStyleSheet on self."""
         c = theme.colors(theme_name)
         self.setStyleSheet(_build_window_chrome_style(c))
-        self.centralwidget.setStyleSheet(f"background-color: {c['bg_base']};")
-        self.sidebar_container.setStyleSheet(
+        # See _container_style for why these are not bare declarations.
+        self.centralwidget.setStyleSheet(_container_style(f"background-color: {c['bg_base']};"))
+        self.sidebar_container.setStyleSheet(_container_style(
             f"background-color: {c['bg_base']}; border-right: 1px solid {c['bg_input']};"
-        )
-        self.chat_container.setStyleSheet(f"background-color: {c['bg_base']};")
+        ))
+        self.chat_container.setStyleSheet(_container_style(f"background-color: {c['bg_base']};"))
         # Built after this method's first call, in the constructor, so a
         # theme applied before the chrome exists must not crash.
         if hasattr(self, "_chrome"):
@@ -1662,11 +1763,25 @@ class MainWindow(QMainWindow):
         taskbar's own restore. Without this the glyph would say
         "maximize" on an already-maximized window, and the resize grips
         would stay live along edges that no longer have anywhere to go.
+
+        Coming back to the window (Alt+Tab, a click) also checks it is
+        drawn at the scale Windows has it at (app/dpi_guard.py).
         """
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             if hasattr(self, "_chrome"):
                 self._chrome.sync()
+        elif event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self._check_scale_soon()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._check_scale_soon()
+
+    def _check_scale_soon(self) -> None:
+        guard = getattr(self, "_dpi_guard", None)
+        if guard is not None:
+            guard.schedule()
 
     def apply_theme(self, theme_name: str) -> None:
         """
@@ -1745,6 +1860,61 @@ class MainWindow(QMainWindow):
             self.tray_icon.hide()
         QApplication.quit()
 
+    # ── Requests from outside: a second launch, the installer ───────────────────
+    # A second launch of Kestrel asks this copy to show itself instead of
+    # starting another one (app/single_instance.py). The installer asks it
+    # to close before it replaces the app's files, then waits for the
+    # process to end, and only offers to end it if it doesn't.
+    #
+    # Both arrive through named kernel objects that a background thread
+    # waits on, and invokeMethod hands them to the GUI thread. They used to
+    # be window messages caught in a nativeEvent override, which ran Python
+    # for every message this window received, including the ones Windows
+    # sends while show() first puts it on screen. Nothing hooks the window
+    # any more.
+
+    def listen_for_outside_requests(self) -> bool:
+        """Start answering a second launch and the installer. Called once
+        by main.py; False when there is nothing to listen for (see
+        single_instance.listen)."""
+        from app import single_instance
+
+        return single_instance.listen(
+            on_activate=lambda: QMetaObject.invokeMethod(
+                self, "_on_second_launch", Qt.ConnectionType.QueuedConnection),
+            on_quit=lambda: QMetaObject.invokeMethod(
+                self, "_on_installer_quit_request", Qt.ConnectionType.QueuedConnection),
+        )
+
+    # Set when the installer asked this copy to close. main.py checks it
+    # before starting the main loop: see _on_installer_quit_request.
+    quit_requested = False
+
+    @pyqtSlot()
+    def _on_installer_quit_request(self) -> None:
+        print("[installer] Quit requested by the installer.")
+        self.quit_requested = True
+        self._quit_app()
+        # quit() does nothing until app.exec() is running, and the first
+        # run's name gate runs a loop of its own before that. exit() ends
+        # any loop that is running, that one included; main.py then sees
+        # quit_requested and doesn't start the main loop at all.
+        QApplication.exit(0)
+
+    @pyqtSlot()
+    def _on_second_launch(self) -> None:
+        from app import single_instance
+
+        print("[startup] Kestrel was launched again - showing this window instead of starting a second copy.")
+        try:
+            self.show_window()
+        finally:
+            # The launch that asked is waiting for this; without it, it
+            # would conclude this copy is stuck (single_instance.hand_over).
+            # Sent even if showing the window failed: this copy is alive,
+            # and the error is in crash.log.
+            single_instance.acknowledge_activation()
+
     # ── Logique IA ─────────────────────────────────────────────────────────────
 
     def process_user_request(self, chat_id, text, from_voice: bool = False):
@@ -1769,6 +1939,8 @@ class MainWindow(QMainWindow):
         self.worker.screenshot_captured.connect(self._on_screenshot_captured)
         self.worker.terminal_output_captured.connect(self._on_terminal_output_captured)
         self.worker.file_output_captured.connect(self._on_file_output_captured)
+        self.worker.compacted.connect(self._on_conversation_compacted)
+        self.worker.sources_captured.connect(self._on_sources_captured)
         # Only fires when Settings > Stream responses is on (see
         # AIWorker.run) - begins the streaming bubble on the first
         # chunk for this chat, then just appends after that.
@@ -1832,11 +2004,34 @@ class MainWindow(QMainWindow):
         a human takes to hand Kestrel context, which is what this handler
         is actually for.
         """
-        marker = f"[[SCREENSHOT:{path}]]"
+        # "|ai": taken by the assistant, which the bubble's caption says.
+        marker = f"[[SCREENSHOT:{path}|ai]]"
         db.add_message(chat_id, "assistant", marker)
         if self.chat._current_chat_id == chat_id:
             self.chat._append_bubble(text=marker, role="assistant")
         self.update_history(chat_id)
+
+    def _on_sources_captured(self, chat_id: int, payload: str) -> None:
+        """The web pages this turn read or found, as a Sources card above
+        the reply. Same persistence and ordering as the terminal and file
+        cards (see _on_terminal_output_captured)."""
+        import json
+        try:
+            entries = json.loads(payload)
+        except ValueError:
+            return
+        marker = chat_widget.encode_sources_marker(entries)
+        db.add_message(chat_id, "assistant", marker)
+        if self.chat._current_chat_id == chat_id:
+            self.chat._append_bubble(text=marker, role="assistant")
+        self.update_history(chat_id)
+
+    def _on_conversation_compacted(self, chat_id: int, summarized: int, tokens_before: int, tokens_after: int) -> None:
+        """The conversation's older part was just replaced by a summary
+        (ai/compaction.py) to keep it inside the model's context: say so in
+        the chat, where it happened, the way Claude shows "compacting"."""
+        if self.chat._current_chat_id == chat_id:
+            self.chat.show_compaction_note(chat_id, summarized, tokens_before, tokens_after)
 
     def _on_terminal_output_captured(self, chat_id: int, command: str, output: str, success: bool) -> None:
         """
@@ -1898,6 +2093,22 @@ class MainWindow(QMainWindow):
         just no longer gated on db.add_message succeeding first.
         """
         self.chat._hide_typing(chat_id)
+        if chat_widget.SYSTEM_MARKER_RE.match((response or "").strip()):
+            # A status note rather than a reply (the answer to /compact,
+            # see ai.main._compact_command_reply): shown as a note, not
+            # typed out as if the assistant had said it, and not read aloud.
+            new_id = db.add_message(chat_id, "assistant", response)
+            if self.chat.is_streaming_thinking(chat_id):
+                self.chat.finish_thinking_block(chat_id)
+            if self.chat._current_chat_id == chat_id:
+                self.chat._append_bubble(text=response, role="assistant")
+                # The note is now the chat's last message: the reply before
+                # it can't be regenerated any more (that would branch away
+                # from the note), same as after any other reply.
+                self.chat.attach_message_id(chat_id, new_id)
+                QTimer.singleShot(0, self.chat._scroll_to_bottom)
+            self._toggle_overlay()
+            return
         new_id = db.add_message(chat_id, "assistant", response)
         if self.chat.is_streaming_thinking(chat_id):
             # Whether or not any actual answer text ever streamed
@@ -1978,14 +2189,25 @@ class MainWindow(QMainWindow):
         original = db.get_message(message_id)
         if original is None or original["parent_id"] is None:
             return  # an assistant reply always has a parent user message under this model - fail soft if that's somehow not true
+        # The question being answered. Not necessarily the reply's direct
+        # parent: a screenshot, terminal, file or sources card saved just
+        # before the reply sits between them, and re-asking one of those
+        # sent its [[MARKER:...]] text to the model as the question.
         parent = db.get_message(original["parent_id"])
+        while parent is not None and parent["role"] != "user":
+            parent = db.get_message(parent["parent_id"]) if parent["parent_id"] is not None else None
         if parent is None:
             return
 
         self.chat._show_typing(chat_id)
 
+        # The model's copy of this conversation already contains the
+        # reply being replaced; rebuild it from the chat, up to the
+        # question being asked again.
+        ai_main.forget_chat(chat_id)
         thread = QThread()
         worker = AIWorker()
+        worker.history_before_id = parent["id"]
         worker.moveToThread(thread)
         thread.started.connect(lambda: worker.start.emit(chat_id, parent["content"]))
         worker.finished.connect(lambda cid, resp: self._on_regenerate_finished(cid, resp, original["parent_id"]))
@@ -2193,11 +2415,23 @@ class MainWindow(QMainWindow):
         # conversation, cluttering it and, worse, becoming part of the
         # history the model reads back on the next turn.
         #
-        # Nothing is written to the database. If the run produced
+        # The summary is not written to the database. If the run produced
         # something worth keeping - a macro - that macro is the artifact,
         # and it is on the Macros page.
         self._show_toast(message, seconds=5.0)
         self._refresh_macro_cards()
+
+        # What the run looked at, one screen per step, as a strip in the
+        # chat that opens the viewer. Not text: nothing here reaches the
+        # model's history (see ai/compaction.py, which skips marker rows).
+        folder = outcome.get("screenshots_dir")
+        if folder and outcome.get("screenshot_count"):
+            marker = f"[[RUN_SCREENSHOTS:{folder}]]"
+            db.add_message(chat_id, "assistant", marker)
+            if self.chat._current_chat_id == chat_id:
+                self.chat._append_bubble(text=marker, role="assistant")
+                QTimer.singleShot(50, self.chat._scroll_to_bottom)
+            self.update_history(chat_id)
 
     def _on_autonomous_error(self, chat_id: int, error: str) -> None:
         self._automation_chat_id = None

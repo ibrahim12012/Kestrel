@@ -15,6 +15,10 @@ delays anyone has actually complained about. Both of the ~2 second waits
 fixed this week were network and driver time with no application code in
 them at all. A C rewrite reproduces both exactly.
 
+**Update.** The startup items under "What to do instead" have since been
+done, and the one part that did get rewritten in C is the installer,
+where C does pay. See "What was done" at the end.
+
 ---
 
 ## What was measured, and where
@@ -84,7 +88,7 @@ executing module code for a dependency tree that includes three AI SDKs.
 
 Two things worth knowing before acting on it.
 
-**First, the app currently sleeps longer than it loads.**
+**First, the app slept longer than it loaded** (fixed since, see the end).
 `app/splash_screen.py` holds the splash for a minimum of **2.6 seconds**:
 
 ```python
@@ -208,3 +212,39 @@ memory, cost startup, cost UI latency, and would additionally have to
 reimplement the global keyboard hooks, input injection and UI Automation
 access through native modules anyway, which is the part Python is
 already good at reaching.
+
+---
+
+## What was done
+
+**Startup.**
+
+- The splash minimum is gone (`ensure_minimum_display_time` defaults to
+  0). The window's content replaces the splash as soon as it exists.
+- `google.genai`, `pyautogui` and AppOpener are imported on first use
+  (`ai/lazy_import.py`) instead of before the window. AppOpener was the
+  worst of them: its import runs cmd.exe to switch on terminal colours,
+  and on an install's first run PowerShell's `Get-StartApps`, and each
+  of those flashed a console window, because Kestrel.exe has none.
+- The prewarm thread (audio, voice client, AppOpener, pyautogui) starts
+  1.5 s after the window is shown, not before it is built, so it no
+  longer competes with building the window for the interpreter.
+- qtawesome is gone: the icons are SVG files rendered by Qt's own SVG
+  module (`app/icons.py`), so no icon font is loaded at startup.
+- A second launch hands over to the running copy before importing Qt
+  (`app/single_instance.py`) and exits in milliseconds.
+
+Not measured on Windows from here (no PyQt6 in this environment). The
+Console now logs `[startup] Window ready in X s (from launch, imports
+included)`, which is the number to compare before and after.
+
+**The installer is C.** Unlike the app, setup is exactly where the
+runtime shows: it runs once, cold, on a machine that has nothing loaded,
+and a Python installer would have to unpack an interpreter before
+drawing its first pixel. `installer/setup/` is plain C against Win32
+with no C runtime: about 150 KB, a window on screen immediately, and
+decompression on all cores. See `installer/README.md`.
+
+**The app stays Python**, for the reasons above: what a user waits for
+in Kestrel is the network, the model, the audio stack and UI
+Automation, and a rewrite moves none of it.

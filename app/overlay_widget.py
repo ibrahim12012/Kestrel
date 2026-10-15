@@ -37,6 +37,9 @@ class VoiceStatusOverlay(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowTransparentForInput
+            # Never the window in front: the AI's typing checks which
+            # window is (ai/direct_input.py).
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -152,6 +155,10 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint     # always on top
             | Qt.WindowType.Tool                     # not in the taskbar
             | Qt.WindowType.WindowTransparentForInput  # click-through
+            # Never the window in front, which the AI's clicks and typing
+            # go by. Windows still reports this window at every point it
+            # covers; ai/direct_input.py looks through it.
+            | Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)

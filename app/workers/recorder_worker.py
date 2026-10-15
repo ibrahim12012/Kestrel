@@ -46,7 +46,8 @@ directly with fake events instead of going through the real hooks.
 
 import keyboard
 import mouse
-import pyautogui
+# Imported on first use, not at startup; see ai/lazy_import.py.
+from ai.lazy_import import pyautogui
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import ai.actions as actions

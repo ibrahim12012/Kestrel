@@ -91,7 +91,7 @@ def _prepare():
         import ctypes
         from ctypes import wintypes
 
-        ULONG_PTR = ctypes.POINTER(wintypes.ULONG)
+        ULONG_PTR = ctypes.c_size_t
 
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
@@ -102,8 +102,31 @@ def _prepare():
                 ("dwExtraInfo", ULONG_PTR),
             ]
 
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        # All three members, not just the keyboard one: SendInput checks
+        # its size argument against the real INPUT, which the mouse member
+        # makes 40 bytes on 64-bit Windows. With the keyboard member alone
+        # it was 32, every call was refused with ERROR_INVALID_PARAMETER,
+        # and every accented character went through the clipboard
+        # fallback instead.
         class _INPUTunion(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
+            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
 
         class INPUT(ctypes.Structure):
             _fields_ = [
@@ -125,7 +148,7 @@ def _prepare():
                     event = INPUT()
                     event.type = INPUT_KEYBOARD
                     event.union.ki = KEYBDINPUT(
-                        wVk=0, wScan=unit, dwFlags=flags, time=0, dwExtraInfo=None
+                        wVk=0, wScan=unit, dwFlags=flags, time=0, dwExtraInfo=0
                     )
                     events.append(event)
 

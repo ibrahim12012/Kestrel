@@ -71,6 +71,15 @@ Kestrel/
 │   ├── main.py                         # chat + autonomous mode + recorder + voice assistant
 │   ├── actions.py                      # All tool_* functions live here
 │   ├── macro_generalizer.py            # Turns literal recorded macros into parameterized ones
+│   ├── compaction.py                   # Summarises a long conversation to stay within the model's context
+│   ├── web_reader.py                   # Reading and crawling web pages (robots.txt, no CAPTCHA bypass)
+│   ├── web_render.py                   # Off-screen Edge/Chrome for pages built with JavaScript
+│   ├── web_search.py                   # tool_web_search
+│   ├── sounds.py                       # Sound effects (assets/sounds)
+│   ├── run_screenshots.py              # Keeps each autonomous step's screenshot
+│   ├── discovery/screen_map.py         # Names and coordinates of the controls on screen
+│   ├── discovery/                      # Mapping an app's screens and controls (see "Mapping an App")
+│   ├── automation_lock.py              # One automation at a time: AI run, macro or mapping run
 │   ├── instructions.txt                # Main chatbot system prompt
 │   ├── autonomous_instructions.txt     # AUTONOMOUS MODE instructions
 │   └── generalizer_instructions.txt    # Macro generalizer system prompt
@@ -83,6 +92,11 @@ Kestrel/
 │   ├── recorder_widget.py              # No-Code Recorder page
 │   ├── overlay_widget.py
 │   ├── chat_database.py
+│   ├── chat_context.py                 # What the model is given of a saved chat
+│   ├── image_viewer.py                 # Full-size screenshot viewer
+│   ├── icons.py                        # SVG icons tinted to the theme (assets/icons)
+│   ├── single_instance.py              # One running Kestrel at a time
+│   ├── dpi_guard.py                    # Keeps the window drawn at the scale Windows has it at
 │   ├── ui/                             # UI files (made with QT Designer)
 │   │   ├── main_window.ui
 │   │   ├── chat_widget.ui
@@ -95,12 +109,16 @@ Kestrel/
 │      ├── recorder_worker.py           # global hotkeys for the recorder
 │      └── generalizer_worker.py        # manual "Generalize" button (Recorder page)
 │
+├── installer/                          # Native setup program (see installer/README.md)
+│
+├── tools/make_sounds.py                # Generates assets/sounds
+│
 ├── tests/                              # pytest suite (see Testing section)
 │
 ├── data/                    
 │   ├── chats.db
 │
-└── assets/                             # logos, icons SVG
+└── assets/                             # logo (icon/), icons/ (SVG), sounds/ (WAV)
 ```
 
 ---
@@ -158,7 +176,7 @@ The window opens. The console panel will show:
 
 ## How the AI Decides What to Do
 
-Kestrel follows a strict 3-level decision tree on every message:
+Kestrel follows a strict decision tree on every message:
 
 ```
 User message received
@@ -167,6 +185,12 @@ User message received
 Can I answer this from my own knowledge?
         │
        YES → Answer directly, then offer to act if relevant
+        │
+        NO ↓
+        │
+Is the answer on the web?
+        │
+       YES → Search, read or crawl it myself (no browser, no macro)
         │
         NO ↓
         │
@@ -185,6 +209,9 @@ Does this require multiple steps / screen navigation?
 | What you say | What it does |
 |---|---|
 | "What is Reddit?" | Answers from knowledge, offers to open it |
+| "What's the weather in Paris?" | Calls tool_web_search directly |
+| "Summarise this article: <link>" | Calls tool_read_url directly |
+| "What plans does acme.com offer?" | Calls tool_crawl_site directly |
 | "Open Spotify" | Calls tool_open_application("spotify") directly |
 | "Play my chill playlist macro" | Runs the saved macro directly |
 | "Search for lo-fi on YouTube" | Launches autonomous mode |
@@ -196,6 +223,8 @@ Does this require multiple steps / screen navigation?
 ## The Macro System
 
 Every task the AI completes in autonomous mode gets saved as a reusable function in `ai/actions.py`. This is the core power of Kestrel - over time you build a personal library of macros.
+
+Macros are for doing things on screen. Looking something up is not one of them: the AI searches (`tool_web_search`), reads pages (`tool_read_url`) and crawls sites (`tool_crawl_site`) itself, directly, the way ChatGPT or Claude read the web. Nothing opens on screen, nothing is recorded, and a run that only read the web saves no macro. Crawls follow `robots.txt`, requests say they come from `Kestrel-User`, pages built with JavaScript are read in an off-screen browser (Edge or Chrome, headless), and a CAPTCHA or bot check stops the read: nothing tries to get past one.
 
 **How macros are saved:**
 
@@ -261,7 +290,7 @@ The AI will open your browser, navigate to youtube.com, and save a macro called 
 ```
 Go to Google
 ```
-Saves a macro for opening google.com. Used as a base for searches.
+Saves a macro for opening google.com on screen. You don't need it to look things up: just ask, and the AI searches and reads the web itself.
 
 #### Open your music app
 ```
@@ -289,13 +318,7 @@ Go to [your most visited website]
 
 ### Step 3 - Build search macros
 
-Now teach the AI how to search on each platform. These become reusable templates.
-
-#### Google search macro
-```
-Search for "test" on Google
-```
-This creates a macro that opens Google and uses the search bar. The AI will generalize this pattern.
+Now teach the AI how to search on the platforms you use on screen, to play or open what it finds. These become reusable templates. (Searching the web for information needs no macro: the AI does that itself.)
 
 #### YouTube search macro
 ```
@@ -307,7 +330,7 @@ Search for "test" on YouTube
 Search for "test" on Deezer
 ```
 
-**After this step the AI knows how to search on every platform you use - without constructing URLs.**
+**After this step the AI knows how to search on every platform you use on screen - without constructing URLs.**
 
 ---
 
@@ -402,7 +425,7 @@ Have a short conversation to set up your profile. These get saved in `ai/instruc
 I prefer dark mode on all websites when possible
 ```
 ```
-When I ask you to search something, always use Google unless I specify otherwise
+For news, prefer French sources
 ```
 ```
 My default music app is Deezer / Spotify
@@ -424,13 +447,13 @@ After completing the steps above, you should have macros covering:
 
 | Category | Macros to have |
 |---|---|
-| Navigation | go_to_youtube, go_to_google, go_to_gmail, go_to_deezer |
-| Search | search_google, search_youtube, search_deezer |
+| Navigation | go_to_youtube, go_to_gmail, go_to_deezer |
+| Search | search_youtube, search_deezer |
 | Music | play_lofi_youtube, play_liked_songs, play_jazz_deezer |
 | Daily apps | open_discord, open_vscode, open_whatsapp_web |
 | Work | morning_routine, open_work_setup |
 
-With these in place, most of your daily tasks become instant one-step calls instead of full autonomous sessions.
+With these in place, most of your daily tasks become instant one-step calls instead of full autonomous sessions. Web lookups never needed a macro: those are answered directly.
 
 ---
 
@@ -447,7 +470,9 @@ The AI has no direct way to start autonomous mode itself - there's no tool call 
    - Calls exactly ONE tool
    - Takes a new screenshot
    - Repeats until the goal is complete
-   - Saves everything as a macro via `tool_name_action`
+   - Saves everything as a macro via `tool_name_action` (a run that did nothing on screen saves none)
+
+**Your mouse stays yours.** The AI's clicks don't move your pointer (`ai/direct_input.py`). A click goes to the control through Windows UI Automation (a button is pressed, a checkbox ticked, a tab or list item selected, a menu opened), or as a window message to a classic Windows control. Typing goes into the window the AI clicked even when that window isn't in front, if the field is a standard Windows text box; anything else, and key combinations such as Ctrl+T, bring that window to the front first, once you pause typing. If you click into another window while it types, it stops there and doesn't press Enter. Only an app that reacts to nothing but a real click gets one: Kestrel moves the mouse, clicks, and puts it back where it was. **Settings > Mouse** turns that off, and those clicks are then skipped with the reason given to the AI. Moving your mouse into a corner of the main screen still stops a run.
 
 **Rules the AI follows:**
 - Never uses the Windows search bar
@@ -455,6 +480,31 @@ The AI has no direct way to start autonomous mode itself - there's no tool call 
 - Always navigates step by step: browser → domain → site's search bar → query
 - Calls one tool per turn, always checks the screen after
 - Never emits the suggestion tag without asking in plain language first
+
+---
+
+## Mapping an App
+
+Mapping reads an open app's screens and controls through Windows UI
+Automation and saves them as a map, so the AI can press a control by
+its name (`tool_use_mapped_control`) instead of reading a screenshot for
+every click. Start it from the Mapping page, or ask in the chat.
+
+- The window is found by its program (notepad.exe for "notepad"), then
+  its title. Kestrel's own window, the taskbar, the desktop and windows
+  on another virtual desktop are never mapped.
+- The run clicks through every screen it can reach. Buttons that delete,
+  send, pay, post, reply, call or log out are recorded and never
+  pressed, and only empty one-line fields get its test value.
+- The app's window is maximized for the run and put back as it was
+  afterwards.
+- A finished map is reused; one from a run that was stopped or hit a
+  limit is mapped again, and never replaces a finished one. The Mapping
+  page shows saved maps again and deletes them.
+- When the AI presses a mapped control, the control is looked up in the
+  window as it is now. If it isn't on screen, nothing is clicked.
+- One automation at a time: while an AI run, a macro or a mapping run
+  is going, the others are refused.
 
 ---
 
@@ -479,6 +529,8 @@ def tool_open_project(project_name: str):
 ```
 
 Click **Refresh** in the Tools tab to reload. The new tools appear instantly with auto-generated input fields.
+
+In the installed app, console programs a tool starts (cmd.exe, PowerShell, a script) run without a console window, so nothing flashes on screen. For one you want to see or type into, pass `creationflags=subprocess.CREATE_NEW_CONSOLE` to `subprocess.Popen`.
 
 ---
 
@@ -509,6 +561,13 @@ Run the step-by-step import test:
 python -c "from app.main_window import MainWindow; print('OK')"
 ```
 
+**Kestrel.exe closes on its own, or never shows a window:**
+Start it once more, then look in `%LOCALAPPDATA%\Kestrel\logs`.
+`crash.log` says how the previous run ended: how far it got, its last
+log lines, and, if Windows recorded a crash, the DLL it happened in.
+`kestrel.previous.log` is that run's full log. Those two files are what
+to attach to a bug report.
+
 **AI not responding:**
 Check your `.env` file has `GEMINI_API_KEY=your_key` with no spaces or quotes around the key.
 
@@ -518,8 +577,14 @@ Make sure your functions start exactly with `tool_` (lowercase) and are in the m
 **Autonomous mode not saving macros:**
 Check that `tool_name_action` is in your tools list and that `ai/actions.py` is writable.
 
-**pyautogui not clicking in the right place:**
-If you have multiple monitors, set your primary display in Windows display settings. pyautogui uses primary monitor coordinates.
+**The window is drawn twice, or at the wrong size, after Alt+Tab:**
+Kestrel redraws it at the right scale when you come back to it, and
+`kestrel.log` gets a `[window]` line saying what it found. The
+`[startup] Environment` line should say "DPI awareness per-monitor v2";
+if it says something else, attach the log to a bug report.
+
+**Clicks landing in the wrong place:**
+If you have multiple monitors, the AI looks at and clicks on the main one. Set the display you want it to use as the main display in Windows display settings.
 
 ---
 
@@ -604,16 +669,22 @@ This produces a `dist/Kestrel/` folder (not a single `.exe` - `--onedir` starts 
 1. The app now reads/writes `.env` under `%LOCALAPPDATA%\Kestrel\.env` (via `paths.USER_DATA_PATH`) rather than next to `Kestrel.exe` - `dist/Kestrel/` (and `Program Files`, if you install there) is commonly not writable by a standard non-admin user once actually installed, which is exactly why this changed. Simplest first run: just launch `Kestrel.exe` and paste the key into Settings - it'll create the file in the right place itself. If you'd rather pre-seed it (e.g. for a scripted install), write it to `%LOCALAPPDATA%\Kestrel\.env` directly.
 2. Zip the whole `dist/Kestrel/` folder, or build the real installer described below.
 
-### Building the installer (`installer/Kestrel.iss`)
+### Building the installer
 
-An [Inno Setup](https://jrsoftware.org/isinfo.php) (free) script that wraps `dist/Kestrel/` into a proper installer: Start Menu/Desktop shortcuts, a real Add/Remove Programs entry with an uninstaller, an optional "launch at Windows startup" task (unchecked by default - always-listening-before-you-opened-it is a real behavior change, worth opting into rather than defaulting on), a first-run page for pasting in a `GEMINI_API_KEY` (writes straight to `%LOCALAPPDATA%\Kestrel\.env` - optional, can also be skipped and added later in Settings same as any other install), and an uninstall prompt asking whether to keep or permanently delete saved macros/chat history/settings.
+`installer/build_installer.py` turns `dist/Kestrel/` into one setup program:
 
 ```bash
 pyinstaller Kestrel.spec
-iscc installer\Kestrel.iss
+python installer/build_installer.py
 ```
 
-Output lands in `installer/Output/KestrelSetup.exe`. `#define MyAppVersion` at the top of `Kestrel.iss` is a plain string, not derived from anywhere - keep it in sync with `paths.APP_VERSION` by hand when cutting a release, same as `APP_VERSION`'s own comment already asks. (The `.exe`'s own version resource is generated by `Kestrel.spec` from `APP_VERSION` directly, so that one can't drift.)
+Output lands in `dist/KestrelSetup-<version>.exe`, with the version taken from `paths.APP_VERSION`. The setup is a small native program written in C (`installer/setup/`): per-user install with no administrator rights, Start menu and optional desktop and sign-in shortcuts, an entry in Settings > Apps, updates that cannot leave a half-installed app, an uninstaller that removes everything and asks before deleting your chats and settings, and a command line for unattended installs (`/S`, `/D=<folder>`, ...). **[`installer/README.md`](installer/README.md)** has the details, the options and how to rebuild the stub.
+
+The old Inno Setup script, `installer/Kestrel.iss`, still works (`iscc installer\Kestrel.iss`) if you need it.
+
+### Icons and sounds
+
+The app's icons are SVG files in `assets/icons/`, drawn for Kestrel on a 24 px grid and tinted to the theme at run time (`app/icons.py`); add one by dropping in a file and asking for it by name. The sound effects are WAV files in `assets/sounds/`, generated by `tools/make_sounds.py` (needs numpy); a WAV with the same name replaces one.
 
 ### Antivirus warnings
 

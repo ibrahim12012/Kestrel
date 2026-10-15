@@ -27,13 +27,14 @@ DiscoveryError elsewhere rather than silently doing nothing.
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from dataclasses import dataclass, field
 
 from ai.discovery.errors import DiscoveryError
 from ai.log import log as print
-from ai import safety
+from ai import direct_input, safety
 from ai.log import log_debug
 
 # ── Optional: only present on Windows, and only if the user's install
@@ -138,6 +139,19 @@ class AccessibilityBackend:
         """Type `value` into `element` (a text box, combo box, ...). Returns True on success."""
         raise NotImplementedError
 
+    def field_text(self, element: AccessibilityElement) -> "str | None":
+        """What a text field holds now, or None when that can't be read.
+        The mapper doesn't type into a field that holds something."""
+        return None
+
+    def restore_window(self) -> None:
+        """Put the target window back the way it was before the run
+        (maximized or not). Nothing by default."""
+
+    def show_if_minimized(self) -> None:
+        """Show the target window again if it is minimized, so its
+        controls can be found. Nothing by default."""
+
     def find_back_control(self, element: AccessibilityElement) -> "AccessibilityElement | None":
         """
         Search `element`'s screen for a back button, close arrow, or nav
@@ -200,6 +214,33 @@ class WindowsUIABackend(AccessibilityBackend):
 
     def __init__(self, window_control):
         self._window = window_control
+        # Its top-level window handle: where clicks and keys go when the
+        # window isn't in front (ai/direct_input.py).
+        try:
+            self._hwnd = int(window_control.NativeWindowHandle or 0) or None
+        except Exception:
+            self._hwnd = None
+        # Which window this is, for the saved map and the Mapping page.
+        try:
+            self.window_title = (window_control.Name or "").strip()
+        except Exception:
+            self.window_title = ""
+        self.program = direct_input.program_of(self._hwnd)
+        # How the window was shown before the run maximized it.
+        self._state_before = None
+
+    def take_window(self) -> None:
+        """Bring the window forward and maximize it, so every run starts
+        from the same layout, remembering how it was for restore_window."""
+        self._state_before = direct_input.remember_window(self._hwnd)
+        _bring_to_front_and_maximize(self._window)
+
+    def restore_window(self) -> None:
+        if self._state_before is not None:
+            direct_input.put_back(self._hwnd, self._state_before)
+
+    def show_if_minimized(self) -> None:
+        direct_input.unminimize(self._hwnd)
 
     # -- element translation -----------------------------------------
 
@@ -301,55 +342,77 @@ class WindowsUIABackend(AccessibilityBackend):
         return found
 
     def activate(self, element: AccessibilityElement) -> bool:
+        """What a click on it does, without the user's mouse when the app
+        allows it: an invoke, toggle, select or expand through UI
+        Automation, else a posted click, else the mouse borrowed and put
+        back (ai/direct_input.py). It used to be SetFocus() and a real
+        click every time, which pulled the window to the front and took
+        the pointer for the whole run."""
         control = self._find_control_by_path(self._window, element.id)
         if control is None:
             return False
         try:
-            control.SetFocus()
-            if hasattr(control, "Click"):
-                control.Click(simulateMove=False)
-            else:
-                control.GetInvokePattern().Invoke()
-            time.sleep(0.4)
-            return True
+            outcome = direct_input.press_control(control, window=self._hwnd)
         except Exception as e:
             print(f"[discovery] activate({element.id!r}) failed: {e}")
             return False
+        if not outcome.done:
+            if not outcome.stopped:
+                print(f"[discovery] activate({element.id!r}) not done: {outcome.note}")
+            return False
+        time.sleep(0.4)
+        return True
 
     def hover(self, element: AccessibilityElement) -> bool:
-        control = self._find_control_by_path(self._window, element.id)
-        if control is None:
-            return False
-        try:
-            # MoveCursorToMyCenter - same cursor move Click() does
-            # internally before it clicks - WITHOUT the click that
-            # follows it in activate() above. This is deliberately not
-            # SetFocus()+Click(): the whole point here is to trigger
-            # whatever a real hover reveals (a tooltip, a hover-only
-            # visual state) without ever invoking the element.
-            control.MoveCursorToMyCenter(simulateMove=True)
-            time.sleep(0.3)  # give a hover-triggered tooltip time to appear
-            return True
-        except Exception as e:
-            print(f"[discovery] hover({element.id!r}) failed: {e}")
-            return False
+        """Nothing. This moved the pointer onto the control so a tooltip
+        could show, and nothing ever read the tooltip: the pointer is the
+        user's."""
+        return True
 
     def input_value(self, element: AccessibilityElement, value: str) -> bool:
         control = self._find_control_by_path(self._window, element.id)
         if control is None:
             return False
         try:
-            control.SetFocus()
-            if hasattr(control, "GetValuePattern"):
-                pattern = control.GetValuePattern()
-                pattern.SetValue(value)
-            else:
-                control.SendKeys(value)
+            # Set straight in, when the field allows it: no focus, no keys.
+            # On the same thread, with the same time limit, as a click: a
+            # change handler that opens a dialog doesn't hold the run.
+            outcome = direct_input.set_value(control, value, window=self._hwnd)
+            if outcome.stopped:
+                return False
+            if outcome.done:
+                time.sleep(0.2)
+                return True
+            # Otherwise click into it and type, as a person would, with the
+            # checks the AI's own typing has (ai/actions.py): into this
+            # window only, stopping if another one comes in front.
+            if not direct_input.press_control(control, window=self._hwnd).done:
+                return False
+            from ai.actions import _type_text
+            if not _type_text(value):
+                return False
             time.sleep(0.2)
             return True
         except Exception as e:
             print(f"[discovery] input_value({element.id!r}) failed: {e}")
             return False
+
+    def field_text(self, element: AccessibilityElement) -> "str | None":
+        """The field's text through UI Automation's value pattern. None
+        when it has none (a drop-down list, a number box), won't say (a
+        password box) or can't be typed into (a drop-down list with a
+        read-only value): the mapper leaves those alone."""
+        control = self._find_control_by_path(self._window, element.id)
+        if control is None:
+            return None
+        try:
+            pattern = control.GetPattern(auto.PatternId.ValuePattern)
+            if not pattern or pattern.IsReadOnly:
+                return None
+            return pattern.Value or ""
+        except Exception as e:
+            log_debug(f"[accessibility] field_text({element.id!r}) unreadable: {e}")
+            return None
 
     def find_back_control(self, element: AccessibilityElement) -> "AccessibilityElement | None":
         for candidate in self.list_interactables(element):
@@ -374,7 +437,11 @@ class WindowsUIABackend(AccessibilityBackend):
 
     def send_key(self, key: str) -> None:
         try:
-            auto.SendKeys("{" + key + "}")
+            # Posted to the window's focused control when it isn't in
+            # front and can take it that way; the keyboard otherwise, once
+            # the window is in front (ai/actions.py).
+            from ai.actions import _press_key
+            _press_key(key, window=self._hwnd)
         except Exception as e:
             print(f"[discovery] send_key({key!r}) failed: {e}")
 
@@ -441,12 +508,94 @@ class WindowsUIABackend(AccessibilityBackend):
 # Factory
 # ══════════════════════════════════════════════════════════════════
 
-def get_backend(app_name: str) -> AccessibilityBackend:
+@dataclass
+class WindowCandidate:
+    """An open top-level window get_backend could map."""
+    control: object
+    title: str
+    program: str        # notepad.exe, or "" when it can't be read
+    order: int = 0      # place from the top of the window stack
+    in_front: bool = False
+
+
+def window_match_score(app_name: str, title: str, program: str) -> int:
     """
-    Find app_name's foreground/top-level window and return a backend
-    scoped to it. Raises DiscoveryError (never returns None) if no
-    accessibility backend is available on this platform, the package
-    isn't installed, or no matching window could be found.
+    How well a window matches the name someone typed. 0 is no match.
+
+    The program's own name is the best evidence (notepad.exe for
+    "notepad"), then the whole title, then the name's words appearing
+    together in the title ("Visual Studio Code" in "main.py - Visual
+    Studio Code"), then a plain substring of four letters or more. The
+    window class used to count too, and a short name like "code" then
+    matched whatever window happened to come first.
+    """
+    needle = " ".join((app_name or "").lower().split())
+    if not needle:
+        return 0
+    title = " ".join((title or "").lower().split())
+    program = (program or "").strip().lower()
+    stem = program[:-4] if program.endswith(".exe") else program
+    if needle in (program, stem):
+        return 100
+    if title == needle:
+        return 90
+    needle_words = re.findall(r"\w+", needle)
+    if stem and stem in needle_words:
+        return 80
+    title_words = re.findall(r"\w+", title)
+    count = len(needle_words)
+    if count and any(title_words[i:i + count] == needle_words
+                     for i in range(len(title_words) - count + 1)):
+        return 70
+    if len(needle) >= 4 and needle in title:
+        return 40
+    if len(needle) >= 4 and needle in stem:
+        return 30
+    return 0
+
+
+def pick_window(app_name: str, candidates: list) -> "WindowCandidate | None":
+    """The best match: highest score, then one whose title has the name
+    in it too (File Explorer's windows over another explorer.exe window),
+    then the window in front, then the one nearest the top of the stack.
+    None when nothing matches."""
+    best, best_key = None, None
+    for candidate in candidates:
+        score = window_match_score(app_name, candidate.title, candidate.program)
+        # A window with no title is taken only by its program's own name.
+        if score <= 0 or (not candidate.title and score < 80):
+            continue
+        titled = window_match_score(app_name, candidate.title, "") > 0
+        key = (score, titled, candidate.in_front, -candidate.order)
+        if best_key is None or key > best_key:
+            best, best_key = candidate, key
+    return best
+
+
+def _no_window_message(app_name: str, candidates: list) -> str:
+    named = [c for c in candidates if c.title][:8]
+    if not named:
+        return f"No open window matches {app_name!r}, and no other window is open. Open the app first."
+    listed = "; ".join(f"{c.title} ({c.program})" if c.program else c.title for c in named)
+    return (f"No open window matches {app_name!r}. Open the app first, or use the "
+            f"name of its program or its title bar. Open windows: {listed}.")
+
+
+def get_backend(app_name: str, take: bool = True) -> AccessibilityBackend:
+    """
+    Find app_name's window and return a backend scoped to it. Raises
+    DiscoveryError (never returns None) if no accessibility backend is
+    available on this platform, the package isn't installed, or no
+    window matches (the message lists the open ones).
+
+    take: bring the window forward and maximize it, as a mapping run
+    starts. Pressing one mapped control (ai/actions.py's
+    tool_use_mapped_control) leaves the window as it is.
+
+    Kestrel's own windows are never picked: mapping "Kestrel" would have
+    the run click through the app that is running it. Neither are the
+    taskbar, the desktop, tool windows or windows on another virtual
+    desktop, and an untitled window only by its program's name.
     """
     if sys.platform != "win32":
         raise DiscoveryError(
@@ -459,22 +608,43 @@ def get_backend(app_name: str) -> AccessibilityBackend:
             "(pip install uiautomation) - it isn't installed."
         )
 
-    needle = app_name.strip().lower()
+    # UI Automation has to be called from a thread with COM set up, and a
+    # mapping run is on a worker thread.
+    direct_input.ui_automation()
     try:
-        desktop = auto.GetRootControl()
-        for window in desktop.GetChildren():
-            name = (window.Name or "").lower()
-            class_name = (getattr(window, "ClassName", "") or "").lower()
-            if needle in name or needle in class_name:
-                _bring_to_front_and_maximize(window)
-                return WindowsUIABackend(window)
+        windows = list(auto.GetRootControl().GetChildren())
     except Exception as e:
-        raise DiscoveryError(f"Could not enumerate windows: {e}") from e
+        raise DiscoveryError(f"Could not list the open windows: {e}") from e
 
-    raise DiscoveryError(
-        f"No open window matching {app_name!r} was found. Make sure the "
-        f"app is running and its window title contains that name."
-    )
+    front = direct_input.foreground_window()
+    candidates = []
+    for order, window in enumerate(windows):
+        try:
+            hwnd = int(window.NativeWindowHandle or 0) or None
+            title = (window.Name or "").strip()
+        except Exception as e:
+            log_debug(f"[accessibility] a window skipped: {e}")
+            continue
+        # The taskbar, the desktop, tool windows, windows on another
+        # virtual desktop and Kestrel's own are never what is meant: the
+        # taskbar is an explorer.exe window too, and on top of every other.
+        if not hwnd or not direct_input.can_be_mapped(hwnd):
+            continue
+        candidates.append(WindowCandidate(
+            control=window, title=title, program=direct_input.program_of(hwnd),
+            order=order, in_front=(hwnd == front),
+        ))
+
+    chosen = pick_window(app_name, candidates)
+    if chosen is None:
+        raise DiscoveryError(_no_window_message(app_name, candidates))
+    backend = WindowsUIABackend(chosen.control)
+    backend.window_title = chosen.title
+    backend.program = chosen.program
+    if take:
+        print(f"[discovery] Mapping the window {chosen.title!r} ({chosen.program or 'program unknown'}).")
+        backend.take_window()
+    return backend
 
 
 def _bring_to_front_and_maximize(window) -> None:
@@ -487,7 +657,8 @@ def _bring_to_front_and_maximize(window) -> None:
     not maximized (some windows genuinely can't be, e.g. fixed-size
     dialogs), so a failure here is logged and swallowed rather than
     raised - it would be a strange failure mode for "the window didn't
-    maximize" to block "explore this window" entirely.
+    maximize" to block "explore this window" entirely. The mapper puts
+    the window back the way it was when the run ends (restore_window).
     """
     try:
         window.SetActive()

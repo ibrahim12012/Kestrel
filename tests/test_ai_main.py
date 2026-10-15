@@ -485,6 +485,15 @@ def test_append_preference_never_removes_lines_across_several_updates():
 # object so no real network/credentials are needed.
 # ══════════════════════════════════════════════════════════════════
 
+def _fake_screen():
+    """A stand-in capture for the autonomous-mode tests. A real image, not
+    a string: the step loop resizes and re-encodes what it captures
+    (prepare_autonomous_screenshot), so a string fails there, before the
+    part a test is about."""
+    from PIL import Image
+    return Image.new("RGB", (64, 40), "white")
+
+
 def _fake_chat(response_text):
     fake_response = type("Response", (), {"text": response_text})()
     return type("FakeChat", (), {"send_message": lambda self, content: fake_response})()
@@ -578,7 +587,7 @@ def test_run_autonomous_mode_resumes_after_human_handoff(monkeypatch):
     # thread ever reaches the human_handoff_requested check and defeating
     # the whole point of this test. A couple of real 2-second inter-step
     # sleeps is a small price for testing the actual race correctly.
-    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(lambda: "fake_screen")}))
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
     monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
 
     actions.emergency_stop = False
@@ -755,7 +764,7 @@ def test_run_autonomous_mode_recovers_from_a_transient_network_error(monkeypatch
     monkeypatch.setattr(ai_main, "load_file", lambda path: "instructions")
     monkeypatch.setattr(ai_main, "play_notification_sound", lambda *a, **k: None)
     monkeypatch.setattr(ai_main.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(lambda: "fake_screen")}))
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
     monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
 
     actions.emergency_stop = False
@@ -834,7 +843,7 @@ def test_run_autonomous_mode_drains_pending_screenshot_when_failsafe_stops_a_too
     monkeypatch.setattr(ai_main, "load_file", lambda path: "instructions")
     monkeypatch.setattr(ai_main, "play_notification_sound", lambda *a, **k: None)
     monkeypatch.setattr(ai_main.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(lambda: "fake_screen")}))
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
     monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
 
     actions.emergency_stop = False
@@ -878,7 +887,7 @@ def test_run_autonomous_mode_drains_pending_screenshot_even_when_it_raises(monke
     monkeypatch.setattr(ai_main, "load_file", lambda path: "instructions")
     monkeypatch.setattr(ai_main, "play_notification_sound", lambda *a, **k: None)
     monkeypatch.setattr(ai_main.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(lambda: "fake_screen")}))
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
     monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
 
     calls = {"n": 0}
@@ -930,7 +939,7 @@ def test_run_autonomous_mode_raises_network_unavailable_when_retries_exhausted(m
     monkeypatch.setattr(ai_main, "load_file", lambda path: "instructions")
     monkeypatch.setattr(ai_main, "play_notification_sound", lambda *a, **k: None)
     monkeypatch.setattr(ai_main.time, "sleep", lambda *a, **k: None)
-    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(lambda: "fake_screen")}))
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
     monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
 
     calls = {"n": 0}
@@ -1080,3 +1089,109 @@ def test_load_instructions_seeds_before_reading(monkeypatch, tmp_path):
     monkeypatch.setattr(ai_main, "INSTRUCTIONS_PATH", str(target))
 
     assert ai_main.load_instructions() == "SHIPPED PROMPT"
+
+
+def test_an_autonomous_run_goes_on_after_a_one_step_tool(monkeypatch):
+    """
+    A flag left set by the chat (opening an app there sets single_fcn) used
+    to end the next run after its first step as "Single action completed",
+    and so did opening an app inside the run. Only the model saying the
+    goal is reached (tool_name_action) ends it.
+    """
+    import ai.actions as actions
+
+    monkeypatch.setattr(ai_main, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(ai_main, "get_max_automation_steps", lambda: 5)
+    monkeypatch.setattr(ai_main, "reset_safety_limits", lambda: None)
+    monkeypatch.setattr(ai_main, "load_file", lambda path: "instructions")
+    monkeypatch.setattr(ai_main, "play_notification_sound", lambda *a, **k: None)
+    monkeypatch.setattr(ai_main.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
+    monkeypatch.setattr(ai_main.pyautogui, "failSafeCheck", lambda: None)
+    monkeypatch.setattr(actions, "emergency_stop", False)
+    monkeypatch.setattr(actions, "human_handoff_requested", False)
+    monkeypatch.setattr(actions, "fcn_name", False)
+    monkeypatch.setattr(actions, "single_fcn", True)        # left over from the chat
+
+    steps = {"n": 0}
+
+    class FakeResponse:
+        text = ""
+
+    def fake_send_message(parts):
+        steps["n"] += 1
+        if steps["n"] == 1:
+            actions.single_fcn = True                          # opened Chrome
+        elif steps["n"] == 3:
+            actions.fcn_name = True                            # goal reached
+        return FakeResponse()
+
+    fake_chat = type("FakeChat", (), {"send_message": staticmethod(fake_send_message)})()
+    fake_client = type("FakeClient", (), {
+        "chats": type("FakeChats", (), {"create": staticmethod(lambda **k: fake_chat)})()
+    })()
+    monkeypatch.setattr(ai_main, "_gemini_client", fake_client)
+    monkeypatch.setattr(ai_main, "tools", [])
+    monkeypatch.setattr(ai_main, "refresh_actions", lambda: None)
+    monkeypatch.setattr(ai_main, "_defer_post_run_work", lambda goal: None)
+
+    result = ai_main.run_autonomous_mode("Open Chrome and go to news.ycombinator.com", max_steps=5)
+
+    assert steps["n"] == 3 and result["outcome"] == "success" and result["steps_used"] == 3
+    assert actions.single_fcn is False
+
+
+def test_a_vision_click_on_kestrels_own_window_is_not_sent_through_it(monkeypatch):
+    """The screenshot was taken just now: a point on Kestrel's window means
+    the model picked something on Kestrel, and a click there would go to an
+    app beneath that it never saw."""
+    import ai.actions as actions
+    import ai.model_client as model_client
+    from ai import direct_input
+
+    class FakeModels:
+        @staticmethod
+        def generate_content(**kwargs):
+            return type("R", (), {"text": '[{"point": [500, 500], "label": "search bar"}]'})()
+
+    monkeypatch.setattr(ai_main, "_ensure_initialized", lambda: None)
+    monkeypatch.setattr(ai_main, "ImageGrab", type("FakeGrab", (), {"grab": staticmethod(_fake_screen)}))
+    monkeypatch.setattr(model_client, "make_client", lambda: type("C", (), {"models": FakeModels})())
+    monkeypatch.setattr(ai_main.pyautogui, "size", lambda: (1920, 1080))
+    monkeypatch.setattr(actions, "emergency_stop", False)
+    monkeypatch.setattr(direct_input, "kestrel_window_at", lambda x, y: True)
+    monkeypatch.setattr(actions, "actions_list", [])
+    clicks = []
+    monkeypatch.setattr(direct_input, "click", lambda *a, **k: clicks.append(a))
+
+    result = ai_main.get_position_object_and_click("search bar")
+
+    assert result.startswith("Could not click search bar at (960, 540): Kestrel's own window is there")
+    assert clicks == []
+    assert actions.actions_list == []          # nothing recorded for a macro either
+
+
+def test_a_chat_message_leaves_a_stop_pressed_while_another_automation_winds_down(monkeypatch):
+    import threading
+    import ai.actions as actions
+    from ai import automation_lock
+
+    held, release = threading.Event(), threading.Event()
+
+    def mapping_run():
+        with automation_lock.hold("a mapping run"):
+            held.set()
+            release.wait(5)
+
+    thread = threading.Thread(target=mapping_run)
+    thread.start()
+    try:
+        held.wait(5)
+        actions.emergency_stop = True
+        ai_main._clear_stop_for_new_message()
+        assert actions.emergency_stop is True
+    finally:
+        release.set()
+        thread.join(5)
+    ai_main._clear_stop_for_new_message()
+    assert actions.emergency_stop is False

@@ -138,6 +138,101 @@ DESTRUCTIVE_ACTION_KEYWORDS: frozenset = frozenset({
     "maximize", "maximise", "agrandir", "restore down", "restaurer",
 })
 
+# The same, for actions that reach other people or cost money (sending,
+# posting, paying, calling, accepting an invitation) and for the "lose
+# my changes" answers, in the languages an app's buttons are most often
+# in. Matched as whole words, so "post" doesn't catch "Postal code" and
+# "send" doesn't catch "Sender". Words in scripts written without spaces
+# (Chinese, Japanese) or with combining vowel signs (Hindi) are matched
+# anywhere in the label instead. "Forward", "share" and "transfer" are
+# left out: in most apps they open something rather than do something.
+# So are Spanish "aceptar" and "seguir": they are the OK and Continue of
+# every Spanish dialog and wizard.
+DESTRUCTIVE_ACTION_WORDS: frozenset = frozenset({
+    # English
+    "send", "send now", "post", "publish", "reply", "reply all", "pay",
+    "purchase", "buy", "submit", "order now", "don't save", "do not save",
+    "dont save", "log out", "logout", "log off", "sign off", "empty",
+    "delete account", "clear data", "clear history", "call", "subscribe",
+    "accept", "decline", "reject", "approve", "install", "update now",
+    "upgrade", "like", "follow", "repost", "retweet", "quick print",
+    # French
+    "supprimer", "effacer", "envoyer", "publier", "payer", "acheter",
+    "commander", "répondre", "répondre à tous", "ne pas enregistrer",
+    "désinstaller", "vider", "se déconnecter", "déconnexion", "réinitialiser",
+    "formater", "soumettre", "appeler", "s'abonner", "accepter", "refuser",
+    "installer", "j'aime", "suivre",
+    # Spanish
+    "eliminar", "borrar", "enviar", "publicar", "pagar", "comprar",
+    "responder", "no guardar", "desinstalar", "vaciar", "cerrar sesión",
+    "restablecer", "formatear", "llamar", "suscribirse", "rechazar",
+    "instalar", "me gusta",
+    # Portuguese
+    "excluir", "apagar", "não salvar", "não guardar", "esvaziar",
+    "sair da conta", "terminar sessão", "redefinir", "formatar", "assinar",
+    "aceitar", "recusar", "curtir",
+    # German
+    "löschen", "entfernen", "senden", "absenden", "veröffentlichen",
+    "bezahlen", "kaufen", "antworten", "nicht speichern", "deinstallieren",
+    "leeren", "abmelden", "zurücksetzen", "formatieren", "anrufen",
+    "abonnieren", "annehmen", "ablehnen", "installieren", "gefällt mir",
+    "folgen",
+    # Italian
+    "elimina", "cancella", "invia", "pubblica", "paga", "acquista", "compra",
+    "rispondi", "non salvare", "disinstalla", "svuota", "esci", "disconnetti",
+    "reimposta", "formatta", "chiama", "iscriviti", "accetta", "rifiuta",
+    "installa", "mi piace", "segui",
+    # Arabic
+    "حذف", "إزالة", "إرسال", "نشر", "دفع", "شراء", "رد", "عدم الحفظ",
+    "لا تحفظ", "إلغاء التثبيت", "تفريغ", "تسجيل الخروج", "إعادة تعيين",
+    "تهيئة", "اشتراك", "قبول", "رفض", "تثبيت",
+    # Hindi
+    "हटाएं", "हटाएँ", "मिटाएं", "भेजें", "प्रकाशित करें", "भुगतान", "खरीदें",
+    "जवाब दें", "सहेजें नहीं", "अनइंस्टॉल", "साइन आउट", "लॉग आउट", "रीसेट",
+    "फ़ॉर्मेट", "कॉल करें", "सदस्यता लें", "स्वीकार करें", "अस्वीकार करें",
+    "इंस्टॉल करें",
+    # Chinese (simplified and traditional)
+    "删除", "刪除", "移除", "清空", "发送", "發送", "发布", "發佈", "發布",
+    "付款", "支付", "购买", "購買", "回复", "回覆", "不保存", "不儲存",
+    "卸载", "解除安裝", "退出登录", "登出", "注销", "註銷", "重置", "格式化",
+    "提交", "下单", "下單", "呼叫", "拨打", "订阅", "訂閱", "接受", "拒绝",
+    "拒絕", "安装", "安裝", "点赞", "按讚", "关注", "關注",
+    # Japanese
+    "削除", "送信", "投稿", "支払", "購入", "返信", "保存しない",
+    "アンインストール", "サインアウト", "ログアウト", "リセット", "フォーマット",
+    "通話", "承諾", "拒否", "インストール", "いいね", "フォロー",
+    # Korean
+    "삭제", "보내기", "전송", "게시", "결제", "구매", "답장", "저장 안 함",
+    "로그아웃", "초기화", "포맷", "통화", "구독", "수락", "거절", "설치",
+    "좋아요", "팔로우",
+})
+
+
+def _written_without_word_breaks(word: str) -> bool:
+    """Devanagari and the other Indic scripts (their vowel signs aren't
+    word characters to a regex), Thai, Chinese, Japanese and Korean."""
+    for ch in word:
+        code = ord(ch)
+        if (0x0900 <= code <= 0x0E7F or 0x1100 <= code <= 0x11FF
+                or 0x3040 <= code <= 0x30FF or 0x3130 <= code <= 0x318F
+                or 0x3400 <= code <= 0x4DBF or 0x4E00 <= code <= 0x9FFF
+                or 0xAC00 <= code <= 0xD7AF or 0xF900 <= code <= 0xFAFF):
+            return True
+    return False
+
+
+def _compile_destructive_words():
+    import re
+
+    spaced = sorted((w for w in DESTRUCTIVE_ACTION_WORDS if not _written_without_word_breaks(w)),
+                    key=len, reverse=True)
+    pattern = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(w) for w in spaced) + r")(?!\w)")
+    anywhere = tuple(w for w in DESTRUCTIVE_ACTION_WORDS if _written_without_word_breaks(w))
+    return pattern, anywhere
+
+
+_DESTRUCTIVE_WORDS_RE, _DESTRUCTIVE_ANYWHERE = _compile_destructive_words()
+
 
 def is_destructive_label(label: "str | None") -> bool:
     """
@@ -149,8 +244,12 @@ def is_destructive_label(label: "str | None") -> bool:
     """
     if not label:
         return False
-    normalized = label.strip().lower().replace("_", " ")
-    return any(keyword in normalized for keyword in DESTRUCTIVE_ACTION_KEYWORDS)
+    normalized = " ".join(label.strip().lower().replace("_", " ").replace("’", "'").split())
+    if any(keyword in normalized for keyword in DESTRUCTIVE_ACTION_KEYWORDS):
+        return True
+    if _DESTRUCTIVE_WORDS_RE.search(normalized):
+        return True
+    return any(word in normalized for word in _DESTRUCTIVE_ANYWHERE)
 
 
 # Typical size of a Windows title-bar minimize/maximize/close button

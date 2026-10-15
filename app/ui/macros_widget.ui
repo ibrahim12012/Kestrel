@@ -64,8 +64,6 @@ QPushButton#btnRefresh:hover, QPushButton#btnRecordMacro:hover {
 QWidget#filterBar {
     background-color: #0a0a0a;
     border-bottom: 1px solid #161616;
-    min-height: 56px;
-    max-height: 56px;
 }
 QLineEdit#searchInput {
     background-color: #121212;
@@ -74,9 +72,7 @@ QLineEdit#searchInput {
     font-size: 12px;
     border: 1px solid #1f1f1f;
     border-radius: 8px;
-    padding: 6px 12px;
-    min-height: 32px;
-    max-height: 32px;
+    padding: 0px 12px;
     selection-background-color: rgba(255,255,255,0.18);
 }
 QLineEdit#searchInput:focus {

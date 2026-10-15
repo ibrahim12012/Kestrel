@@ -11,10 +11,9 @@
 # UI
 PyQt6>=6.4.0
 
-# Icons - Font Awesome Free / Material Design Icons bundled as Qt icon
-# fonts, both permissively licensed (SIL OFL 1.1 / Apache 2.0), used
-# instead of Unicode emoji throughout the app (see app/icons.py)
-qtawesome>=1.3.0
+# No icon package: the app's icons are its own SVGs in assets/icons/,
+# drawn by app/icons.py with Qt's own SVG renderer (PyQt6.QtSvg, part
+# of PyQt6).
 
 # Global mouse-button hooks for the Recorder page's trigger shortcuts
 # (app/workers/recorder_worker.py) - same author/ecosystem as `keyboard`,

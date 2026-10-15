@@ -55,7 +55,10 @@ from dataclasses import dataclass, field
 import ai.safety as safety
 from ai.discovery.accessibility import AccessibilityBackend, AccessibilityElement, get_backend
 from ai.discovery.errors import DiscoveryError
-from ai.discovery.tree import ActionTree, AppStateNode, BacktrackAction, DiscoveredAction, ScreenStatus
+# node_event lives with the tree, so showing a saved map doesn't load UI Automation.
+from ai.discovery.tree import (
+    ActionTree, AppStateNode, BacktrackAction, DiscoveredAction, ScreenStatus, node_event,
+)
 from ai.log import log as print
 
 DEFAULT_MAX_NODES = 60
@@ -76,6 +79,10 @@ VOLATILE_NAME_TYPES = frozenset({"ListItem", "TreeItem", "Edit", "ComboBox", "Sp
 # How alike two screens' shapes must be to count as the same screen.
 # Covers a toast appearing, a button greying out, one control relayouting.
 SCREEN_SIMILARITY = 0.82
+
+# A text box this tall holds a document, not a value (Notepad's page is
+# one): typing a mock value there would write into the user's text.
+MAX_FIELD_HEIGHT = 80
 
 # Similarity is only consulted for screens with at least this many
 # elements. Below it a single element swing moves the ratio too far, so
@@ -226,6 +233,7 @@ def _build_node(app_name: str, node_id: str, backend: AccessibilityBackend, root
                 or safety.is_destructive_label(action_id)
                 or safety.is_likely_window_chrome_button(el.bounding_box, root.bounding_box)
             ),
+            name=el.name or "",
         ))
 
     return AppStateNode(
@@ -234,6 +242,7 @@ def _build_node(app_name: str, node_id: str, backend: AccessibilityBackend, root
         screen_status=ScreenStatus.EXPLORING if len(discovered) > 1 else ScreenStatus.SINGLE_CHOICE_LEFT,
         backtrack_action=backtrack,
         discovered_actions=discovered,
+        title=(root.name or "").strip(),
     )
 
 
@@ -254,8 +263,10 @@ def _stop_requested() -> bool:
     Whether the user has asked for automation to stop.
 
     Reads the same ai.actions.emergency_stop flag every action tool
-    checks, so all three routes to it work on a mapping run too: the
-    global stop shortcut, the Esc abort, and the mouse-corner fail-safe.
+    checks, so a mapping run stops the same ways: the global stop
+    shortcut, the Mapping page's Stop button and the mouse-corner
+    fail-safe. Not Esc: backtracking presses Esc to back out of menus,
+    so MainWindow ignores Esc while a mapping run is going.
 
     Imported inside the function rather than at module scope, because
     ai.actions imports this package's runtime module and a top-level
@@ -278,6 +289,9 @@ def map_application_ui(
     mock_value: str = DEFAULT_MOCK_VALUE,
     max_actions: int = DEFAULT_MAX_ACTIONS,
     on_progress=None,
+    on_node=None,
+    on_edge=None,
+    on_window=None,
 ) -> ActionTree:
     """
     Maps `app_name`'s currently-open window and returns the ActionTree.
@@ -293,8 +307,40 @@ def map_application_ui(
     on_progress: optional callable(nodes_mapped, actions_found), called
     after each node is added. app/mapping_monitor.py uses it to keep its
     live count current without polling.
+
+    on_node: optional callable(node_event(node)) for each new screen, with
+    its controls (names, boxes) and the screen and action it was reached
+    from; on_edge: optional callable(from_node, action_id, to_node) when
+    an action leads to a screen already mapped. Together they are what
+    the mapping overlay builds its tree from.
+
+    A window this finds itself is put back the way it was when the run
+    ends (get_backend maximizes it), however the run ends. on_window:
+    optional callable(title, program), told which window that is as soon
+    as it is found, so a run that fails partway can still say.
     """
-    backend = backend or get_backend(app_name)
+    settings = dict(max_nodes=max_nodes, max_depth=max_depth, mock_value=mock_value,
+                    max_actions=max_actions, on_progress=on_progress, on_node=on_node,
+                    on_edge=on_edge)
+    if backend is not None:
+        return _map(app_name, backend, **settings)
+    backend = get_backend(app_name)
+    if on_window is not None:
+        try:
+            on_window(getattr(backend, "window_title", "") or "", getattr(backend, "program", "") or "")
+        except Exception as e:
+            print(f"[discovery] on_window callback failed: {e}")
+    try:
+        return _map(app_name, backend, **settings)
+    finally:
+        try:
+            backend.restore_window()
+        except Exception as e:
+            print(f"[discovery] Could not put the window back as it was: {e}")
+
+
+def _map(app_name: str, backend: AccessibilityBackend, max_nodes: int, max_depth: int,
+         mock_value: str, max_actions: int, on_progress, on_node, on_edge) -> ActionTree:
     tree = ActionTree(app_name=app_name)
 
     screens: dict = {}          # node_id -> _Screen
@@ -339,13 +385,25 @@ def map_application_ui(
             return best_id
         return None
 
-    def _register(root: AccessibilityElement, shape: frozenset) -> str:
+    def _notify(callback, *args) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as e:
+            print(f"[discovery] mapping event callback failed: {e}")
+
+    def _register(root: AccessibilityElement, shape: frozenset,
+                  parent: "str | None" = None, via: "str | None" = None) -> str:
         node_id = _next_id()
         node = _build_node(app_name, node_id, backend, root)
+        node.parent_node_id = parent
+        node.via_action_id = via
         tree.add_node(node)
         screens[node_id] = _Screen(node_id=node_id, shape=shape)
         by_signature[_signature(shape)] = node_id
         _report_progress()
+        _notify(on_node, node_event(node))
         return node_id
 
     def _read_screen() -> tuple:
@@ -458,6 +516,22 @@ def map_application_ui(
             print("[discovery] Stop requested - not taking this action.")
             break
 
+        if action.requires_input:
+            # Typing replaces what a field holds, and nothing puts it back:
+            # only one-line fields that can be read and are empty get the
+            # mock value. A field that can't be read is a drop-down list, a
+            # number box or a password box, where typing would pick an item
+            # or change a setting. The rest are still in the map; they just
+            # aren't tried.
+            height = int((action.bounding_box or {}).get("h", 0))
+            held = None if height > MAX_FIELD_HEIGHT else backend.field_text(target)
+            if held is None or held:
+                why = ("it is a whole document" if height > MAX_FIELD_HEIGHT
+                       else "what it holds can't be read" if held is None
+                       else "it already holds text")
+                print(f"[discovery] {node.current_node_id}: not typing into {action.action_id!r}: {why}")
+                continue
+
         actions_taken += 1
         ok = backend.input_value(target, mock_value) if action.requires_input else backend.activate(target)
         if not ok:
@@ -477,6 +551,7 @@ def map_application_ui(
 
         if landed is not None:
             action.target_node_id = landed
+            _notify(on_edge, node.current_node_id, action.action_id, landed)
             print(f"[discovery] {node.current_node_id} --{action.action_id}--> known node {landed}")
             if _unwind_to(stack, landed):
                 # It was an ancestor, so this is a normal return upward
@@ -489,7 +564,7 @@ def map_application_ui(
             stack.append(_Frame(node_id=landed, depth=frame.depth + 1))
             continue
 
-        new_id = _register(root_now, shape)
+        new_id = _register(root_now, shape, parent=node.current_node_id, via=action.action_id)
         new_node = tree.nodes[new_id]
         action.target_node_id = new_id
         print(
@@ -505,10 +580,18 @@ def map_application_ui(
 
         stack.append(_Frame(node_id=new_id, depth=frame.depth + 1))
 
-    if node_counter >= max_nodes:
-        print(f"[discovery] Stopped at the node cap ({max_nodes}). What was mapped is still saved and usable.")
-    if actions_taken >= max_actions:
-        print(f"[discovery] Stopped at the action cap ({max_actions}). What was mapped is still saved and usable.")
+    if _stop_requested():
+        tree.ending = "stopped"
+    elif node_counter >= max_nodes:
+        tree.ending = "screen_limit"
+        print(f"[discovery] Stopped at the screen limit ({max_nodes}).")
+    elif actions_taken >= max_actions:
+        tree.ending = "action_limit"
+        print(f"[discovery] Stopped at the action limit ({max_actions}).")
+    else:
+        tree.ending = "complete"
+    tree.window_title = getattr(backend, "window_title", "") or ""
+    tree.program = getattr(backend, "program", "") or ""
 
     print(f"[discovery] Mapped {app_name!r}: {tree.node_count()} node(s), {tree.action_count()} action(s)")
     return tree

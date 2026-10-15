@@ -217,8 +217,10 @@ QMessageBox {{
     background-color: {c['bg_panel']};
     color: {c['text_primary']};
     font-family: "Segoe UI";
+    border: none;
 }}
-QLabel {{ color: {c['text_secondary']}; font-family: "Segoe UI"; font-size: 12px; }}
+QLabel {{ color: {c['text_secondary']}; font-family: "Segoe UI"; font-size: 12px; background: transparent; }}
+QDialogButtonBox {{ background: transparent; }}
 QPushButton {{
     background-color: {c['bg_elevated']};
     color: {c['text_muted']};
@@ -406,7 +408,7 @@ QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {c['accent']}; }}
    way to put a real, dynamically-colored icon INTO a QSS arrow pseudo-
    element (QSS `image: url()` needs an actual file, not a runtime
    QIcon) - a CSS-triangle-border approximation was tried and looked
-   rough. Real QToolButtons with real qtawesome icons next to the spin
+   rough. Real QToolButtons with real app/icons.py icons next to the spin
    box sidesteps all of that, using the exact same icon mechanism
    already proven reliable everywhere else in this app. */
 QPushButton#spinStepperBtn {{
@@ -532,7 +534,7 @@ class ThemeDropdown(StyledDropdown):
 class SpinStepper(QWidget):
     """
     Replaces a QSpinBox/QDoubleSpinBox's native up/down buttons with two
-    small real QPushButtons carrying real qtawesome chevron icons - see
+    small real QPushButtons carrying real app/icons.py chevron icons - see
     _build_style's own comment on QSpinBox/QDoubleSpinBox for why: QSS
     styling of the native ::up-button/::down-button/::up-arrow/::down-
     arrow subcontrols looked bad in practice and there's no reliable way
@@ -961,6 +963,35 @@ class SettingsWidget(QWidget):
         self._wake_status.setObjectName("statusLabel")
         root.addWidget(self._wake_status)
 
+        # ── Sounds ─────────────────────────────────────────────────
+        sounds_title = QLabel(tr("Sounds"))
+        sounds_title.setObjectName("sectionTitle")
+        root.addWidget(sounds_title)
+
+        sounds_check = QCheckBox(tr("Play sound effects"))
+        sounds_check.setObjectName("wakeWordCheck")
+        sounds_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        sounds_check.setChecked(ai_main.get_sounds_enabled())
+
+        def _on_sounds_toggled(state) -> None:
+            ai_main.set_sounds_enabled(bool(state))
+            if state:
+                # Hearing one is the quickest way to know what "on" means.
+                ai_main.play_notification_sound("macro_finished")
+
+        sounds_check.stateChanged.connect(_on_sounds_toggled)
+        root.addWidget(sounds_check)
+
+        sounds_hint = QLabel(
+            tr("Short sounds for things that happen while you're looking elsewhere: "
+               "an automation finishing or stopping, the wake word being heard, the "
+               "microphone opening, a screenshot being taken, and Kestrel needing "
+               "you to finish a step by hand.")
+        )
+        sounds_hint.setObjectName("sectionHint")
+        sounds_hint.setWordWrap(True)
+        root.addWidget(sounds_hint)
+
         # ── Keyboard shortcuts ─────────────────────────────────────
         shortcuts_title = QLabel(tr("Keyboard shortcuts"))
         shortcuts_title.setObjectName("sectionTitle")
@@ -1096,6 +1127,31 @@ class SettingsWidget(QWidget):
         self._files_dir_status = QLabel()
         self._files_dir_status.setObjectName("statusLabel")
         root.addWidget(self._files_dir_status)
+
+        # ── Mouse ────────────────────────────────────────────────────
+        # The AI clicks without the user's mouse (ai/direct_input.py);
+        # this is whether it may borrow it for an app that takes nothing
+        # but a real click.
+        mouse_title = QLabel(tr("Mouse"))
+        mouse_title.setObjectName("sectionTitle")
+        root.addWidget(mouse_title)
+
+        mouse_check = QCheckBox(tr("Use the mouse when an app can't be clicked any other way"))
+        mouse_check.setObjectName("wakeWordCheck")
+        mouse_check.setCursor(Qt.CursorShape.PointingHandCursor)
+        mouse_check.setChecked(ai_main.get_mouse_fallback())
+        mouse_check.stateChanged.connect(lambda state: ai_main.set_mouse_fallback(bool(state)))
+        root.addWidget(mouse_check)
+
+        mouse_hint = QLabel(
+            tr("The AI clicks in apps without moving your mouse, so you can keep using "
+               "it while the AI works. A few apps only react to a real click: for those, "
+               "Kestrel moves the mouse, clicks, and puts it back where it was. With this "
+               "off, it skips those clicks and tells the AI why.")
+        )
+        mouse_hint.setObjectName("sectionHint")
+        mouse_hint.setWordWrap(True)
+        root.addWidget(mouse_hint)
 
         # ── Macro playback delay ────────────────────────────────────
         macro_title = QLabel(tr("Macro playback delay"))
@@ -1448,6 +1504,10 @@ class SettingsWidget(QWidget):
         root.addWidget(title)
 
         checkbox = QCheckBox(tr("Send anonymous crash reports"))
+        # The shared settings checkbox look (see QCheckBox#wakeWordCheck
+        # in _build_style). This one was missed when the others moved
+        # over, so it was the only native-looking box on the page.
+        checkbox.setObjectName("wakeWordCheck")
         checkbox.setChecked(ai_main.get_telemetry_enabled())
         checkbox.stateChanged.connect(
             lambda state: ai_main.set_telemetry_enabled(bool(state))

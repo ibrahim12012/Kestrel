@@ -77,8 +77,10 @@ three things explicitly rather than leaving them to a default:
   materially different risk profile and gets scored as one.
 - `uiAccess="false"` - it does not use the flag that lets a process
   drive input into higher-integrity windows.
-- `supportedOS` for Windows 8.1/10/11, plus per-monitor DPI awareness,
-  which also gets the DPI numbers reported correctly.
+- `supportedOS` for Windows 7 to 11, `longPathAware`, and Common
+  Controls 6, the same as PyInstaller's default manifest. DPI awareness
+  is not declared there: Qt sets it (per-monitor v2) when the app
+  starts, and a manifest that also set it made Qt's own call fail.
 
 ### Writing into its own install directory
 
